@@ -59,7 +59,7 @@ static NSString * const kDirectoryManagerErrorDomain = @"com.salesforce.mobilesd
     if (!directory) {
         return NO;
     }
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     BOOL isDirectory;
     BOOL fileExists = [manager fileExistsAtPath:directory isDirectory:&isDirectory];
     if (!fileExists) {
@@ -124,29 +124,18 @@ static NSString * const kDirectoryManagerErrorDomain = @"com.salesforce.mobilesd
         // do nothing
         return nil;
     }
+    
     switch (scope) {
         case SFUserAccountScopeGlobal:
             return [self directoryForOrg:nil user:nil community:nil type:type components:components];
             
         case SFUserAccountScopeOrg:
-            if (!user.credentials.organizationId) {
-                [SFSDKCoreLogger w:[self class] format:@"Credentials missing for user"];
-                return nil;
-            }
             return [self directoryForOrg:user.credentials.organizationId user:nil community:nil type:type components:components];
             
         case SFUserAccountScopeUser:
-            if (!user.credentials.organizationId || !user.credentials.userId) {
-                [SFSDKCoreLogger w:[self class] format:@"Credentials missing for user"];
-                return nil;
-            }
             return [self directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:nil type:type components:components];
             
         case SFUserAccountScopeCommunity:
-            if (!user.credentials.organizationId || !user.credentials.userId) {
-                [SFSDKCoreLogger w:[self class] format:@"Credentials missing for user"];
-                return nil;
-            }
             // Note: if the user communityId is nil, we use the default (internal) name for it.
             return [self directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:user.credentials.communityId?:kDefaultCommunityName type:type components:components];
     }
@@ -155,7 +144,7 @@ static NSString * const kDirectoryManagerErrorDomain = @"com.salesforce.mobilesd
 - (NSString*)directoryForUser:(SFUserAccount*)user type:(NSSearchPathDirectory)type components:(NSArray*)components {
     if (user) {
         if (!user.credentials.organizationId || !user.credentials.userId) {
-                [SFSDKCoreLogger w:[self class] format:@"Credentials missing for user"];
+            [SFSDKCoreLogger w:[self class] format:@"Credentials missing for user"];
             return nil;
         }
         // Note: if the user communityId is nil, we use the default (internal) name for it.
@@ -176,7 +165,7 @@ static NSString * const kDirectoryManagerErrorDomain = @"com.salesforce.mobilesd
 #pragma mark - File Migration Methods
 
 - (void)moveContentsOfDirectory:(NSString *)sourceDirectory toDirectory:(NSString *)destinationDirectory {
-    NSFileManager *fileManager = [[NSFileManager alloc]init];
+    NSFileManager *fileManager = [NSFileManager defaultManager];
     NSError *error = nil;
     if (sourceDirectory && [fileManager fileExistsAtPath:sourceDirectory]) {
         [SFDirectoryManager ensureDirectoryExists:destinationDirectory error:nil];
@@ -254,8 +243,8 @@ static NSString * const kDirectoryManagerErrorDomain = @"com.salesforce.mobilesd
 }
 
 + (void)upgradeUserDirectory:(NSSearchPathDirectory)type {
-    NSString *rootDirectory = [[SFDirectoryManager sharedManager] directoryForUser:nil type:type components:nil];
-    NSFileManager *fm = [[NSFileManager alloc] init];
+    NSString *rootDirectory = [[SFDirectoryManager sharedManager] directoryForOrg:nil user:nil community:nil type:type components:nil];
+    NSFileManager *fm = [NSFileManager defaultManager];
     NSError *error = nil;
 
     if ([fm fileExistsAtPath:rootDirectory]) {
@@ -279,9 +268,21 @@ static NSString * const kDirectoryManagerErrorDomain = @"com.salesforce.mobilesd
                     NSString *orgPath = [rootPath stringByAppendingPathComponent:orgContent];
                     NSString *newDirectory = [orgContent entityId18];
                     NSString *newPath = [rootPath stringByAppendingPathComponent:newDirectory];
-                    [fm moveItemAtPath:orgPath toPath:newPath error:&error];
-                    if (error) {
-                        [SFSDKCoreLogger e:[self class] format:@"Error moving %@ to %@: %@", orgPath, newPath, error];
+                    if (![fm fileExistsAtPath:newPath]) {
+                        // File does not exist, copy it.
+                        [fm moveItemAtPath:orgPath toPath:newPath error:&error];
+                        if (error) {
+                            [SFSDKCoreLogger e:[self class] format:@"Existing Files does not exist, Error moving %@ to %@: %@", orgPath, newPath, error];
+                        }
+                    } else {
+                        [fm removeItemAtPath:newPath error:&error];
+                        if (error) {
+                            [SFSDKCoreLogger e:[self class] format:@"Existing Files exist, Error removing %@ to %@: %@", orgPath, newPath, error];
+                        }
+                        [fm moveItemAtPath:orgPath toPath:newPath error:&error];
+                        if (error) {
+                            [SFSDKCoreLogger e:[self class] format:@"Error moving %@ to %@ after removing existing files: %@", orgPath, newPath, error];
+                        }
                     }
                 }
             }

@@ -138,6 +138,23 @@
     expectedTotalSize:-1];
 }
 
+- (void) testSoqlSyncDownWithBatchSizeFromConfig {
+    [self.sdkManager setupUserSyncsFromDefaultConfig];
+    
+    SFSyncState* sync = [self.syncManager getSyncStatusByName:@"soqlSyncDownWithBatchSize"];
+    XCTAssertEqualObjects(sync.soupName, @"accounts");
+    [self checkStatus:sync
+         expectedType:SFSyncStateSyncTypeDown
+           expectedId:sync.syncId
+         expectedName:@"soqlSyncDown"
+       expectedTarget:[SFSoqlSyncDownTarget
+                       newSyncTarget:@"SELECT Id, Name, LastModifiedDate FROM Account" maxBatchSize:200]
+      expectedOptions:[SFSyncOptions newSyncOptionsForSyncDown:SFSyncStateMergeModeOverwrite]
+       expectedStatus:SFSyncStateStatusNew
+     expectedProgress:0
+    expectedTotalSize:-1];
+}
+
 - (void) testSoslSyncDownFromConfig {
     [self.sdkManager setupUserSyncsFromDefaultConfig];
     
@@ -308,7 +325,8 @@
                                                     newWithSObjectType:@"Account"
                                                     soupName:@"accounts"
                                                     idFieldName:@"IdX"
-                                                    modificationDateFieldName:@"LastModifiedDateX"]
+                                                    modificationDateFieldName:@"LastModifiedDateX"
+                                                    externalIdFieldName:@"ExternalIdX"]
                        parentCreateFieldlist:@[@"IdX",@"Name", @"Description"]
                        parentUpdateFieldlist:@[@"Name", @"Description"]
                        childrenInfo:[SFChildrenInfo
@@ -317,7 +335,8 @@
                                      soupName:@"contacts"
                                      parentIdFieldName:@"AccountId"
                                      idFieldName:@"IdY"
-                                     modificationDateFieldName:@"LastModifiedDateY"]
+                                     modificationDateFieldName:@"LastModifiedDateY"
+                                     externalIdFieldName:@"ExternalIdY"]
                        childrenCreateFieldlist:@[@"LastName", @"AccountId"]
                        childrenUpdateFieldlist:@[@"FirstName", @"AccountId"]
                        relationshipType:SFParentChildrenRelationpshipMasterDetail]

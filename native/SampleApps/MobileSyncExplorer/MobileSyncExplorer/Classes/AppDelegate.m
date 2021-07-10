@@ -38,7 +38,7 @@
 #import <SalesforceSDKCore/SFUserAccountManager.h>
 #import <UserNotifications/UserNotifications.h>
 
-@interface AppDelegate () <SalesforceSDKManagerDelegate>
+@interface AppDelegate ()
 
 /**
  * Convenience method for setting up the main UIViewController and setting self.window's rootViewController
@@ -51,7 +51,6 @@
  */
 - (void)initializeAppViewState;
 
-- (void)setUserLoginStatus :(BOOL) loggedIn;
 @end
 
 @implementation AppDelegate
@@ -72,12 +71,11 @@
         __weak typeof (self) weakSelf = self;
         [SFSDKAuthHelper registerBlockForCurrentUserChangeNotifications:^{
             __strong typeof (weakSelf) strongSelf = weakSelf;
-            [strongSelf setUserLoginStatus:YES];
+            [strongSelf resetUserloginStatus];
             [strongSelf resetViewState:^{
                 [strongSelf setupRootViewController];
             }];
         }];
-        
         //Uncomment following lines to enable IDP Login flow. Set scheme of idpAppp & display name (optional)
         //[MobileSyncSDKManager sharedManager].idpAppURIScheme = @"sampleidpapp";
         //[MobileSyncSDKManager sharedManager].appDisplayName = @"SampleAppOne";
@@ -104,6 +102,7 @@
     
     __weak typeof (self) weakSelf = self;
     [SFSDKAuthHelper loginIfRequired:^{
+        [weakSelf resetUserloginStatus];
         [weakSelf setupRootViewController];
     }];
     return YES;
@@ -153,7 +152,8 @@
 }
 
 #pragma mark - Private methods
-- (void)setUserLoginStatus:(BOOL) loggedIn {
+- (void)resetUserloginStatus {
+    BOOL loggedIn = [SFUserAccountManager.sharedInstance currentUser] != nil;
     [[NSUserDefaults msdkUserDefaults] setBool:loggedIn forKey:@"userLoggedIn"];
     [[NSUserDefaults msdkUserDefaults] synchronize];
     [SFSDKMobileSyncLogger log:[self class] level:SFLogLevelDebug format:@"%d userLoggedIn", [[NSUserDefaults msdkUserDefaults] boolForKey:@"userLoggedIn"] ];
@@ -184,10 +184,4 @@
     }
 }
 
-- (void)sdkManagerWillResignActive {
-    if ([MobileSyncSDKManager sharedManager].useSnapshotView) {
-        // Remove the keyboard if it is showing..
-        [[SFSDKWindowManager sharedManager].activeWindow.window endEditing:YES];
-    }
-}
 @end

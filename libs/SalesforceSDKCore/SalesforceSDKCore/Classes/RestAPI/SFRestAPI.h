@@ -23,10 +23,10 @@
  */
 
 #import <Foundation/Foundation.h>
-#import "SFRestRequest.h"
-#import "SFSObjectTree.h"
-#import "SFUserAccount.h"
-#import "SalesforceSDKConstants.h"
+#import <SalesforceSDKCore/SFRestRequest.h>
+#import <SalesforceSDKCore/SFSObjectTree.h>
+#import <SalesforceSDKCore/SFUserAccount.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -51,6 +51,14 @@ extern NSString* const kSFRestDefaultAPIVersion NS_SWIFT_NAME(SFRestDefaultAPIVe
  * Misc keys appearing in requests
  */
 extern NSString* const kSFRestIfUnmodifiedSince NS_SWIFT_NAME(SFRestIfUnmodifiedSince);
+
+/**
+ * SOQL batch related constants
+ */
+extern NSInteger const kSFRestSOQLMinBatchSize NS_SWIFT_NAME(SFRestSOQLMinBatchSize);
+extern NSInteger const kSFRestSOQLMaxBatchSize NS_SWIFT_NAME(SFRestSOQLMaxBatchSize);
+extern NSInteger const kSFRestSOQLDefaultBatchSize NS_SWIFT_NAME(SFRestSOQLDefaultBatchSize);
+extern NSString* const kSFRestQueryOptions NS_SWIFT_NAME(SFRestQueryOptions);
 
 /**
  * Main class used to issue REST requests to the standard Force.com REST API.
@@ -107,14 +115,6 @@ NS_SWIFT_NAME(RestClient)
  * Cancel all requests that are waiting to be executed.
  */
 - (void)cancelAllRequests;
-
-/**
- * Sends a REST request to the Salesforce server and invokes the appropriate delegate method.
- * @param request `SFRestRequest` object to be sent.
- * @param delegate Delegate object that handles the server response. 
- * This value overwrites the delegate property of the request.
- */
-- (void)send:(SFRestRequest *)request delegate:(nullable id<SFRestDelegate>)delegate SFSDK_DEPRECATED("8.2", "9.0", "Will be removed in Mobile SDK 9.0, use send:request:requestDelegate instead.");
 
 /**
  * Sends a REST request to the Salesforce server and invokes the appropriate delegate method.
@@ -175,16 +175,6 @@ NS_SWIFT_NAME(RestClient)
  * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_sobject_describe.htm
  */
 - (SFRestRequest *)requestForDescribeWithObjectType:(NSString *)objectType apiVersion:(nullable NSString *)apiVersion;
-
-/**
- * Returns an `SFRestRequest` object that provides layout data for the specified object and layout type.
- *
- * @param objectType Type of a Salesforce object. Example: "Account".
- * @param layoutType Layout type. Supported types are "Full" and "Compact". Default is "Full".
- * @param apiVersion API version.
- * @see https://developer.salesforce.com/docs/atlas.en-us.uiapi.meta/uiapi/ui_api_resources_record_layout.htm
- */
-- (SFRestRequest *)requestForLayoutWithObjectType:(nonnull NSString *)objectType layoutType:(nullable NSString *)layoutType apiVersion:(nullable NSString *)apiVersion SFSDK_DEPRECATED("8.2", "9.0", "Will be removed in Mobile SDK 9.0, use requestForLayoutWithObjectAPIName:objectAPIName:formFactor:layoutType:mode:recordTypeId:apiVersion instead.");
 
 /**
  * Returns an `SFRestRequest` object that provides layout data for the specified parameters.
@@ -297,6 +287,16 @@ NS_SWIFT_NAME(RestClient)
  * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_query.htm
  */
 - (SFRestRequest *)requestForQuery:(NSString *)soql apiVersion:(nullable NSString *)apiVersion;
+
+/**
+ * Returns an `SFRestRequest` object that executes the specified SOQL query.
+ * @param soql String containing the query to execute. Example: "SELECT Id,
+ *             Name from Account ORDER BY Name LIMIT 20".
+ * @param apiVersion API version.
+ * @param batchSize Batch size: number between 200 and 2000 (default).
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_query.htm
+ */
+- (SFRestRequest *)requestForQuery:(NSString *)soql apiVersion:(nullable NSString *)apiVersion batchSize:(NSInteger)batchSize;
 
 /**
  * Returns an `SFRestRequest` object that executes the specified SOQL query.

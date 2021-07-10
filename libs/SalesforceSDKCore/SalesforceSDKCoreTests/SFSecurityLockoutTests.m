@@ -23,19 +23,15 @@
  */
 
 #import "SFSecurityLockoutTests.h"
-#import "SFSecurityLockout+Internal.h"
 #import "SFPreferences.h"
-#import "SFPasscodeManager.h"
+#import "SFSecurityLockout+Internal.h"
+#import <SalesforceSDKCommon/SalesforceSDKCommon-Swift.h>
 
 @interface SFSecurityLockoutTests ()
 
 + (void)cleanupSettings;
-- (void)verifyFileSettingsValues:(NSNumber *)legacyTimeoutNum
-                 legacyLockedVal:(BOOL)legacyLockedVal
-             biometricAllowedVal:(BOOL)biometricAllowedVal;
-- (void)verifyKeychainSettingsValues:(NSUInteger)keychainTimeoutVal
-                   keychainLockedVal:(BOOL)keychainLockedVal
-           keychainPasscodeLengthVal:(NSUInteger*)keychainPasscodeLengthVal;
+- (void)verifyFileSettingsValues:(BOOL)biometricAllowedVal;
+- (void)verifyKeychainSettingsValues:(NSUInteger)keychainPasscodeLengthVal;
 @end
 
 @implementation SFSecurityLockoutTests
@@ -89,27 +85,15 @@
 - (void)testSettingsUpgrade
 {
     [SFSecurityLockout class];  // Make sure initialize call for SFSecurityLockout is out of the way.
-    
+
     // No initial values: Defaults migrated to keychain.
     [SFSecurityLockoutTests cleanupSettings];
-    [SFSecurityLockout upgradeSettings];
-    [self verifyFileSettingsValues:nil legacyLockedVal:NO biometricAllowedVal:YES];
-    [self verifyKeychainSettingsValues:kDefaultLockoutTime keychainLockedVal:NO keychainPasscodeLengthVal:nil];
-    
-    // Initial legacy values, no keychain values: Legacy values migrated to keychain.
-    [SFSecurityLockoutTests cleanupSettings];
-    NSUInteger timeoutVal = arc4random();
-    NSNumber *legacyTimeoutNum = @(timeoutVal);
-    BOOL legacyLockedVal = (arc4random() % 2 == 0);
     BOOL biometricAllowedVal = (arc4random() % 2 == 0);
-    [[NSUserDefaults standardUserDefaults] setObject:legacyTimeoutNum forKey:kSecurityTimeoutLegacyKey];
-    [[NSUserDefaults standardUserDefaults] setBool:legacyLockedVal forKey:kSecurityIsLockedLegacyKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
     [[SFPreferences globalPreferences] setBool:biometricAllowedVal forKey:kBiometricUnlockAllowedKey];
     [[SFPreferences globalPreferences] synchronize];
     [SFSecurityLockout upgradeSettings];
-    [self verifyFileSettingsValues:legacyTimeoutNum legacyLockedVal:legacyLockedVal biometricAllowedVal:biometricAllowedVal];
-    [self verifyKeychainSettingsValues:[legacyTimeoutNum unsignedIntegerValue] keychainLockedVal:legacyLockedVal keychainPasscodeLengthVal:nil];
+    [self verifyFileSettingsValues:biometricAllowedVal];
+    [self verifyKeychainSettingsValues:kDefaultPasscodeLength];
     
     // Keychain values already defined: No further migration of values.
     [SFSecurityLockoutTests cleanupSettings];
@@ -120,44 +104,31 @@
     [SFSecurityLockout writeLockoutTimeToKeychain:keychainTimeoutNum];
     [SFSecurityLockout writePasscodeLengthToKeychain:[NSNumber numberWithUnsignedInteger:passcodeLength]];
     [SFSecurityLockout upgradeSettings];
-    [self verifyFileSettingsValues:nil legacyLockedVal:NO biometricAllowedVal:YES];
-    [self verifyKeychainSettingsValues:[keychainTimeoutNum unsignedIntegerValue] keychainLockedVal:[keychainLockedNum boolValue] keychainPasscodeLengthVal:&passcodeLength];
+    [self verifyFileSettingsValues:YES];
+    [self verifyKeychainSettingsValues:passcodeLength];
 }
 
 #pragma mark - Helper methods
 
 + (void)cleanupSettings
 {
-    [SFSecurityLockout writeLockoutTimeToKeychain:nil];
-    [SFSecurityLockout writeIsLockedToKeychain:nil];
-    [SFSecurityLockout writePasscodeLengthToKeychain:nil];
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kSecurityTimeoutLegacyKey];
-    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kSecurityIsLockedLegacyKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    SFSDKKeychainResult *result = [SFSDKKeychainHelper removeWithService:@"com.salesforce.security.lockoutTime" account:nil];
+    result = [SFSDKKeychainHelper removeWithService:@"com.salesforce.security.isLocked" account:nil];
+    result = [SFSDKKeychainHelper removeWithService:@"com.salesforce.security.passcode.length" account:nil];
     [[SFPreferences globalPreferences] removeObjectForKey:kBiometricUnlockAllowedKey];
     [[SFPreferences globalPreferences] synchronize];
 }
 
-- (void)verifyFileSettingsValues:(NSNumber *)legacyTimeoutNum
-                 legacyLockedVal:(BOOL)legacyLockedVal
-             biometricAllowedVal:(BOOL)biometricAllowedVal;
+- (void)verifyFileSettingsValues:(BOOL)biometricAllowedVal;
 {
-    XCTAssertEqualObjects(legacyTimeoutNum, [[NSUserDefaults standardUserDefaults] objectForKey:kSecurityTimeoutLegacyKey], @"Legacy timeout values do not match.");
-    XCTAssertEqual(legacyLockedVal, [[NSUserDefaults standardUserDefaults] boolForKey:kSecurityIsLockedLegacyKey], @"Legacy locked values do not match.");
     // Read value directly because [SFSecurityLockout biometricUnlockAllowed] takes takes device biometric into affect
     BOOL bioAllowed = [[SFPreferences globalPreferences] boolForKey:kBiometricUnlockAllowedKey];
     XCTAssertEqual(biometricAllowedVal, bioAllowed, @"Stored Biometric unlock allowed values do not match.");
 }
 
-- (void)verifyKeychainSettingsValues:(NSUInteger)keychainTimeoutVal
-                   keychainLockedVal:(BOOL)keychainLockedVal
-           keychainPasscodeLengthVal:(NSUInteger*)keychainPasscodeLengthVal
+- (void)verifyKeychainSettingsValues:(NSUInteger)keychainPasscodeLengthVal
 {
-    NSNumber *keychainTimeoutNum = @(keychainTimeoutVal);
-    XCTAssertEqualObjects(keychainTimeoutNum, [SFSecurityLockout readLockoutTimeFromKeychain], @"Keychain timeout values do not match.");
-    NSNumber *keychainLockedNum = @(keychainLockedVal);
-    XCTAssertEqualObjects(keychainLockedNum, [SFSecurityLockout readIsLockedFromKeychain], @"Keychain locked values do not match.");
-    NSNumber *keychainPasscodeNum = (keychainPasscodeLengthVal) ? [NSNumber numberWithUnsignedInteger:*keychainPasscodeLengthVal] : nil;
+    NSNumber *keychainPasscodeNum = (keychainPasscodeLengthVal) ? [NSNumber numberWithUnsignedInteger:keychainPasscodeLengthVal] : nil;
     XCTAssertEqualObjects(keychainPasscodeNum, [SFSecurityLockout readPasscodeLengthFromKeychain], @"Keychain passcode length values do not match.");
 }
 

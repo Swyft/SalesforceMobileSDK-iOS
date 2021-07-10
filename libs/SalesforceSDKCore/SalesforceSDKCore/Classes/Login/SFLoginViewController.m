@@ -54,7 +54,7 @@
 - (instancetype)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
     self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil];
     if (self) {
-        _config = [[SFSDKLoginViewControllerConfig  alloc] init];
+        _config = [[SFSDKLoginViewControllerConfig alloc] init];
         [[SFUserAccountManager sharedInstance] addDelegate:self];
     }
     return self;
@@ -71,13 +71,17 @@
     if(self.showNavbar){
         [self setupNavigationBar];
     } else {
-        self.navigationController.navigationBarHidden  =  YES;
+        self.navigationController.navigationBarHidden = YES;
     }
+    [self layoutWebView];
+}
+
+- (CGFloat) belowFrame:(CGRect) frame {
+    return frame.origin.y + frame.size.height;
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    [self layoutWebView];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -244,20 +248,22 @@
 }
 
 - (BOOL)shouldAutorotate {
-    return NO;
+    return YES;
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskPortrait;
+    return UIInterfaceOrientationMaskAll;
 }
 
 - (void)layoutWebView {
     if (nil != _oauthView) {
         [_oauthView removeFromSuperview];
+        CGFloat x = 0;
+        CGFloat y = [self belowFrame:self.navBar.frame];
+        CGFloat w = self.view.bounds.size.width;
+        CGFloat h = self.view.bounds.size.height - y;
+        self.oauthView.frame = CGRectMake(x, y, w, h);
         [self.view addSubview:_oauthView];
-        NSDictionary *views = NSDictionaryOfVariableBindings(_oauthView);
-        [self.view addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[_oauthView]|" options:0 metrics:nil views:views]];
-        [self.view addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[_oauthView]|" options:0 metrics:nil views:views]];
     }
 }
 
@@ -272,13 +278,14 @@
 }
 
 - (void)handleBackButtonAction {
+    UIScene *scene = self.view.window.windowScene;
     [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:nil];
     if (![SFUserAccountManager sharedInstance].idpEnabled) {
-        [[SFSDKWindowManager sharedManager].authWindow.viewController.presentedViewController dismissViewControllerAnimated:NO completion:^{
-            [[SFSDKWindowManager sharedManager].authWindow dismissWindow];
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController.presentedViewController dismissViewControllerAnimated:NO completion:^{
+            [[[SFSDKWindowManager sharedManager] authWindow:scene] dismissWindow];
         }];
     } else {
-        [[SFSDKWindowManager sharedManager].authWindow.viewController dismissViewControllerAnimated:NO completion:nil];
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController dismissViewControllerAnimated:NO completion:nil];
     }
 }
 

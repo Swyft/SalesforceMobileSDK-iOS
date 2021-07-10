@@ -1,5 +1,3 @@
-import Foundation
-
 /*
  RestClient.swift
  SalesforceSDKCore
@@ -28,19 +26,22 @@ import Foundation
  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+import Foundation
 import Combine
+
 /// Errors that can be thrown while using RestClient
 public enum RestClientError: Error {
     case apiResponseIsEmpty
-    case apiInvocationFailed(underlyingError: Error, urlResponse: URLResponse?)
+    case apiFailed(response: Any?, underlyingError: Error, urlResponse: URLResponse?)
     case decodingFailed(underlyingError: Error)
     case jsonSerialization(underlyingError: Error)
 }
 
 public struct RestResponse {
     private static let emptyStringResponse = ""
-    private (set) var data: Data
-    public private (set) var urlResponse: URLResponse
+    private(set) var data: Data
+    public private(set) var urlResponse: URLResponse
     
     /// Initializes the RestResponse with a Data object and URLResponse.
     /// - Parameter data: Raw response as Data.
@@ -105,7 +106,7 @@ extension RestClient {
     /// This struct requires a Model Object that conforms to Decodable
     /// This model object's properties need to match the Salesforce Schema
     ///   at least in part.
-    struct QueryResponse<Record: Decodable>: Decodable {
+    public struct QueryResponse<Record: Decodable>: Decodable {
       var totalSize: Int?
       var done: Bool?
       var records: [Record]?
@@ -117,7 +118,7 @@ extension RestClient {
     public func send(request: RestRequest, _ completionBlock: @escaping (Result<RestResponse, RestClientError>) -> Void) {
         request.parseResponse = false
         __send(request, failureBlock: { (rawResponse, error, urlResponse) in
-            let apiError = RestClientError.apiInvocationFailed(underlyingError: error ?? RestClientError.apiResponseIsEmpty, urlResponse: urlResponse)
+            let apiError = RestClientError.apiFailed(response: rawResponse, underlyingError: error ?? RestClientError.apiResponseIsEmpty, urlResponse: urlResponse)
             completionBlock(Result.failure(apiError))
         }, successBlock: { (rawResponse, urlResponse) in
             if let data = rawResponse as? Data,
@@ -137,7 +138,7 @@ extension RestClient {
     public func send(compositeRequest: CompositeRequest, _ completionBlock: @escaping (Result<CompositeResponse, RestClientError>) -> Void) {
         compositeRequest.parseResponse = false
         __send(compositeRequest, failureBlock: { (response, error, urlResponse) in
-            let apiError = RestClientError.apiInvocationFailed(underlyingError: error ?? RestClientError.apiResponseIsEmpty, urlResponse: urlResponse)
+            let apiError = RestClientError.apiFailed(response: response, underlyingError: error ?? RestClientError.apiResponseIsEmpty, urlResponse: urlResponse)
             completionBlock(Result.failure(apiError))
         }, successBlock: { (response, _) in
             completionBlock(Result.success(response))
@@ -151,7 +152,7 @@ extension RestClient {
     public func send(batchRequest: BatchRequest, _ completionBlock: @escaping (Result<BatchResponse, RestClientError>) -> Void ) {
         batchRequest.parseResponse = false
         __send(batchRequest, failureBlock: { (response, error, urlResponse) in
-            let apiError = RestClientError.apiInvocationFailed(underlyingError: error ?? RestClientError.apiResponseIsEmpty, urlResponse: urlResponse)
+            let apiError = RestClientError.apiFailed(response: response, underlyingError: error ?? RestClientError.apiResponseIsEmpty, urlResponse: urlResponse)
             completionBlock(Result.failure(apiError))
         }, successBlock: { (response, _) in
             completionBlock(Result.success(response))
@@ -176,7 +177,7 @@ extension RestClient {
     ///
     /// This method relies on the passed parameter ofModelType to infer the generic Record's
     /// concrete type.
-    func fetchRecords<Record: Decodable>(ofModelType modelType: Record.Type,
+    public func fetchRecords<Record: Decodable>(ofModelType modelType: Record.Type,
                                          forRequest request: RestRequest,
                                          withDecoder decoder: JSONDecoder = .init(),
                                        _ completionBlock: @escaping (Result<QueryResponse<Record>, RestClientError>) -> Void) {
@@ -214,7 +215,7 @@ extension RestClient {
     ///
     /// This method relies on the passed parameter ofModelType to infer the generic Record's
     /// concrete type.
-    func fetchRecords<Record: Decodable>(ofModelType modelType: Record.Type,
+    public func fetchRecords<Record: Decodable>(ofModelType modelType: Record.Type,
                                          forQuery query: String,
                                          withApiVersion version: String = SFRestDefaultAPIVersion,
                                          withDecoder decoder: JSONDecoder = .init(),
@@ -226,7 +227,6 @@ extension RestClient {
   
 }
 
-@available(iOS 13.0, watchOS 6.0, *)
 extension RestClient {
     
     public func publisher(for request: RestRequest) -> Future<RestResponse, RestClientError> {
@@ -281,7 +281,7 @@ extension RestClient {
     ///   .assign(to: \.contacts, on: self)
     ///
     /// This pipeline infers it's return type from the variable in the assign subscriber.
-    func records<Record: Decodable>(forRequest request: RestRequest,
+    public func records<Record: Decodable>(forRequest request: RestRequest,
                                     withDecoder decoder: JSONDecoder = .init()) -> AnyPublisher<QueryResponse<Record>, Never> {
       guard request.isQueryRequest else {
         return Empty(completeImmediately: true).eraseToAnyPublisher()
@@ -300,7 +300,7 @@ extension RestClient {
     /// Reusable, generic Combine Pipeline returning an array of records of a local
     /// model object that conforms to Decodable. This method accepts a query string and defers
     /// to records<Record:Decodable>(forRequest request: RestRequest) -> AnyPublisher<[Record], Never>
-    func records<Record: Decodable>(forQuery query: String,
+    public func records<Record: Decodable>(forQuery query: String,
                                     withApiVersion version: String = SFRestDefaultAPIVersion,
                                     withDecoder decoder: JSONDecoder = .init()) -> AnyPublisher<QueryResponse<Record>, Never> {
         let request = RestClient.shared.request(forQuery: query, apiVersion: version)

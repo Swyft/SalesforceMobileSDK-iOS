@@ -158,6 +158,24 @@
                          @"Bad conversion");
 }
 
+- (void) testConvertSmartSqlWithSelfJoinAndJsonExtractedField {
+    XCTAssertEqualObjects(@"select json_extract(mgr.soup, '$.education'), json_extract(e.soup, '$.education') "
+                          "from TABLE_1 as mgr, TABLE_1 as e "
+                          "where json_extract(mgr.soup, '$.education') = json_extract(e.soup, '$.education')",
+                          [self.store convertSmartSql:@"select mgr.{employees:education}, e.{employees:education} "
+                           "from {employees} as mgr, {employees} as e "
+                           "where mgr.{employees:education} = e.{employees:education}"], @"Bad conversion");
+}
+
+- (void) testConvertSmartSqlWithSelfJoinAndJsonExtractedFieldNoLeadingSpaces {
+    XCTAssertEqualObjects(@"select json_extract(mgr.soup, '$.education'),json_extract(e.soup, '$.education') "
+                          "from TABLE_1 as mgr, TABLE_1 as e "
+                          "where not (json_extract(mgr.soup, '$.education')=json_extract(e.soup, '$.education'))",
+                          [self.store convertSmartSql:@"select mgr.{employees:education},e.{employees:education} "
+                           "from {employees} as mgr, {employees} as e "
+                           "where not (mgr.{employees:education}=e.{employees:education})"], @"Bad conversion");
+}
+
 - (void) testConvertSmartSqlWithSpecialColumns
 {
     XCTAssertEqualObjects(@"select TABLE_1.id, TABLE_1.created, TABLE_1.lastModified, TABLE_1.soup from TABLE_1",
@@ -206,6 +224,25 @@
                           [self.store convertSmartSql:@"select e.{employees:education}, {departments:building} from {employees} as e, {departments}"], @"Bad conversion");
     
     // XXX join query with json1 will only run if all the json1 columns are qualified by table or alias
+}
+
+- (void) testConvertSmartSqlForNonIndexedColumns {
+    XCTAssertEqualObjects(@"select json_extract(soup, '$.education'), json_extract(soup, '$.address.zipcode') from TABLE_1 where json_extract(soup, '$.address.city') = 'San Francisco'", [self.store convertSmartSql:@"select {employees:education}, {employees:address.zipcode} from {employees} where {employees:address.city} = 'San Francisco'"], @"Bad conversion");
+}
+
+- (void) testConvertSmartSqlWithQuotedCurlyBraces {
+    XCTAssertEqualObjects(@"select json_extract(soup, '$.education') from TABLE_1 where json_extract(soup, '$.education') like 'Account(where: {Name: {eq: \"Jason\"}})'",
+                        [self.store convertSmartSql:@"select {employees:education} from {employees} where {employees:education} like 'Account(where: {Name: {eq: \"Jason\"}})'"]);
+}
+
+- (void) testConvertSmartSqlWithMultipleQuotedCurlyBraces {
+    XCTAssertEqualObjects(@"select json_extract(soup, '$.education'), '{a:b}', TABLE_1_0 from TABLE_1 where json_extract(soup, '$.address') = '{\"city\": \"San Francisco\"}' or TABLE_1_1 like 'B%'",
+                          [self.store convertSmartSql:@"select {employees:education}, '{a:b}', {employees:firstName} from {employees} where {employees:address} = '{\"city\": \"San Francisco\"}' or {employees:lastName} like 'B%'"]);
+}
+
+- (void) testConvertSmartSqlWithQuotedUnbalancedCurlyBrace {
+    XCTAssertEqualObjects(@"select json_extract(soup, '$.education') from TABLE_1 where json_extract(soup, '$.education') like ' { { { } } '",
+                          [self.store convertSmartSql:@"select {employees:education} from {employees} where {employees:education} like ' { { { } } '"]);
 }
 
 
@@ -360,9 +397,30 @@
     [self assertSameJSONArrayWithExpected:[SFJsonUtils objectFromJSONString:@"[[\"00020\"],[\"00060\"],[\"00070\"],[\"00310\"],[\"102\"]]"] actual:result message:@"Wrong result"];
 }
 
+- (void)testSmartQueryFilteringByNonIndexedField {
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"101\",\"address\":{\"city\":\"San Francisco\", \"zipcode\":94105}}"];
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"102\",\"address\":{\"city\":\"New York City\", \"zipcode\":10004}}"];
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"103\",\"address\":{\"city\":\"San Francisco\", \"zipcode\":94106}}"];
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"104\",\"address\":{\"city\":\"New York City\", \"zipcode\":10006}}"];
+
+    SFQuerySpec *querySpec = [SFQuerySpec newSmartQuerySpec:@"select {employees:employeeId} from {employees} where {employees:address.city} = 'San Francisco' order by {employees:employeeId}" withPageSize:10];
+    NSArray *result = [self.store queryWithQuerySpec:querySpec pageIndex:0 error:nil];
+    [self assertSameJSONArrayWithExpected:[SFJsonUtils objectFromJSONString:@"[[\"101\"],[\"103\"]]"] actual:result message:@"Wrong result"];
+}
+
+- (void)testSmartQueryReturningNonIndexedField {
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"101\",\"address\":{\"city\":\"San Francisco\", \"zipcode\":94105}}"];
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"102\",\"address\":{\"city\":\"New York City\", \"zipcode\":10004}}"];
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"103\",\"address\":{\"city\":\"San Francisco\", \"zipcode\":94106}}"];
+    [self createEmployeeWithJsonString:@"{\"employeeId\":\"104\",\"address\":{\"city\":\"New York City\", \"zipcode\":10006}}"];
+    
+    SFQuerySpec *querySpec = [SFQuerySpec newSmartQuerySpec:@"select {employees:employeeId}, {employees:address.zipcode} from {employees} where {employees:address.city} = 'San Francisco' order by {employees:employeeId}" withPageSize:10];
+    NSArray *result = [self.store queryWithQuerySpec:querySpec pageIndex:0 error:nil];
+    [self assertSameJSONArrayWithExpected:[SFJsonUtils objectFromJSONString:@"[[\"101\", 94105],[\"103\", 94106]]"] actual:result message:@"Wrong result"];
+}
+
 #pragma mark - helper methods
-- (void) loadData
-{
+- (void)loadData {
     // Employees
     [self createEmployeeWithFirstName:@"Christine" withLastName:@"Haas" withDeptCode:@"A00" withEmployeeId:@"00010" withManagerId:@"" withSalary:200000.10 withIsManager:YES];
     [self createEmployeeWithFirstName:@"Michael" withLastName:@"Thompson" withDeptCode:@"A00" withEmployeeId:@"00020" withManagerId:@"00010" withSalary:120000.10 withIsManager:NO];
@@ -377,20 +435,18 @@
     [self createDepartmentWithCode:@"B00" withName:@"R&D" withBudget:2000000];
 }
 
-- (void) createEmployeeWithFirstName:(NSString*)firstName withLastName:(NSString*)lastName withDeptCode:(NSString*)deptCode withEmployeeId:(NSString*)employeeId withManagerId:(NSString*)managerId withSalary:(double)salary withIsManager:(BOOL)isManager
-{
-    NSDictionary* employee = @{kFirstName: firstName, kLastName: lastName, kDeptCode: deptCode, kEmployeeId: employeeId, kManagerId: managerId, kSalary: @(salary), kIsManager: @(isManager)};
+- (void)createEmployeeWithFirstName:(NSString *)firstName withLastName:(NSString *)lastName withDeptCode:(NSString *)deptCode withEmployeeId:(NSString *)employeeId withManagerId:(NSString *)managerId withSalary:(double)salary withIsManager:(BOOL)isManager {
+    NSDictionary *employee = @{kFirstName: firstName, kLastName: lastName, kDeptCode: deptCode, kEmployeeId: employeeId, kManagerId: managerId, kSalary: @(salary), kIsManager: @(isManager)};
     [self.store upsertEntries:@[employee] toSoup:kEmployeesSoup];
 }
 
-- (NSDictionary*)createEmployeeWithJsonString:(NSString*)jsonString {
-    NSDictionary* employee = [SFJsonUtils objectFromJSONString:jsonString];
+- (NSDictionary *)createEmployeeWithJsonString:(NSString*)jsonString {
+    NSDictionary *employee = [SFJsonUtils objectFromJSONString:jsonString];
     return [self.store upsertEntries:@[employee] toSoup:kEmployeesSoup][0];
 }
 	
-- (void) createDepartmentWithCode:(NSString*) deptCode withName:(NSString*)name withBudget:(NSUInteger) budget
-{
-    NSDictionary* department = @{kDeptCode: deptCode, kName: name, kBudget: @(budget)};
+- (void)createDepartmentWithCode:(NSString *)deptCode withName:(NSString *)name withBudget:(NSUInteger)budget {
+    NSDictionary *department = @{kDeptCode: deptCode, kName: name, kBudget: @(budget)};
     [self.store upsertEntries:@[department] toSoup:kDepartmentsSoup];
 }
 
