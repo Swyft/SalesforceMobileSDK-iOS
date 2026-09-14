@@ -23,6 +23,7 @@
  */
 
 #import <SalesforceSDKCommon/SFJsonUtils.h>
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 #import "SFRestRequest+Internal.h"
 #import "SFRestAPI+Internal.h"
 #import "NSString+SFAdditions.h"
@@ -42,8 +43,8 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
         self.queryParams = [queryParams mutableCopy];
         self.endpoint = (hostType == SFSDKRestServiceHostTypeCustom)?@"":kSFDefaultRestEndpoint;
         self.parseResponse = YES;
-        self.shouldRefreshOn403 = YES;
         self.request = [[NSMutableURLRequest alloc] init];
+        self.timeoutInterval = self.request.timeoutInterval;
     }
     return self;
 }
@@ -134,12 +135,13 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
 # pragma mark - send and cancel
 
 - (NSURLRequest *)prepareRequestForSend:(SFUserAccount *)user {
+
     /*
      * If an absolute URL is passed in, use it as-is. If a relative URL is passed in,
      * parse it and put the pieces together to construct the full URL.
      */
     NSMutableString *fullUrl = nil;
-    
+
     /* FIXME: Remove handling of full url in the path component for the next major release.
      * Leaving this code in place for backward compatibility for sdk versions 7.0 and prior.
      */
@@ -173,7 +175,6 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
             }
             [fullUrl appendString:endpoint];
         }
-        
         NSMutableString *path = [[NSMutableString alloc] initWithString:self.path];
         if ([path hasPrefix:@"/"]) {
             [path deleteCharactersInRange:NSMakeRange(0, 1)];
@@ -187,20 +188,33 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
             [fullUrl appendString:[SFRestRequest toQueryString:self.queryParams]];
         }
         self.request = [[NSMutableURLRequest alloc] initWithURL:[[NSURL alloc] initWithString:fullUrl]];
-
-        //Set the service host type
-        NSURLRequestNetworkServiceType serviceType = [self urlRequestServiceType:self.networkServiceType];
-        [self.request setNetworkServiceType:serviceType];
-        
-        // Sets HTTP method on the request.
-        [self.request setHTTPMethod:[SFRestRequest httpMethodFromSFRestMethod:self.method]];
     }
 
-    // Sets OAuth Bearer token header on the request (if not already present).
-    // Allows Authenticated clients to make api calls that dont require access token.
-    if (self.requiresAuthentication && user && ![self.request.allHTTPHeaderFields.allKeys containsObject:@"Authorization"]) {
-        NSString *bearer = [NSString stringWithFormat:@"Bearer %@", user.credentials.accessToken];
-        [self.request setValue:bearer forHTTPHeaderField:@"Authorization"];
+    // Sets the timeout interval.
+    self.request.timeoutInterval = self.timeoutInterval;
+
+    // Sets the service host type.
+    NSURLRequestNetworkServiceType serviceType = [self urlRequestServiceType:self.networkServiceType];
+    [self.request setNetworkServiceType:serviceType];
+
+    // Sets HTTP method on the request.
+    [self.request setHTTPMethod:[SFRestRequest httpMethodFromSFRestMethod:self.method]];
+
+
+    // Stamps the Authorization header (Bearer or DPoP, depending on credentials.tokenType),
+    // and on the DPoP branch attaches a per-request proof header. Skipped when the caller
+    // has pre-stamped Authorization themselves.
+    if (self.requiresAuthentication && user
+            && ![self.request.allHTTPHeaderFields.allKeys containsObject:@"Authorization"]) {
+        NSError *authError = nil;
+        BOOL ok = [SFSDKDPoPRequestDecorator applyAuthHeaders:self.request
+                                                        scope:user.credentials.identifier
+                                                  accessToken:user.credentials.accessToken
+                                                    tokenType:user.credentials.tokenType
+                                                        error:&authError];
+        if (!ok) {
+            [SFSDKCoreLogger e:[self class] format:@"Failed to stamp authorization headers: %@", authError.localizedDescription];
+        }
     }
 
     // Adds custom headers to the request if any are set.
@@ -220,8 +234,7 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
             self.request.HTTPBodyStream = self.requestBodyStreamBlock();
         }
     }
-   
-   return self.request;
+    return self.request;
 }
 
 - (void)cancel {
@@ -314,6 +327,7 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
         case kCFURLErrorDNSLookupFailed:
         case kCFURLErrorResourceUnavailable:
         case kCFURLErrorTimedOut:
+        case kCFURLErrorDataNotAllowed:
             return YES;
             break;
         default:
@@ -354,7 +368,7 @@ NSString * const kSFDefaultRestEndpoint = @"/services/data";
         [queryString appendString:@"?"];
         for (NSString *paramName in [components allKeys]) {
             NSString* paramValue = components[paramName];
-            NSString *part = [NSString stringWithFormat:@"%@=%@", [paramName stringByURLEncoding], [paramValue stringByURLEncoding]];
+            NSString *part = [NSString stringWithFormat:@"%@=%@", [paramName sfsdk_stringByURLEncoding], [paramValue sfsdk_stringByURLEncoding]];
             [parts addObject:part];
         }
         [queryString appendString:[parts componentsJoinedByString:@"&"]];

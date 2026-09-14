@@ -41,6 +41,8 @@ static CGFloat kImageHeight = 60;
 @property (strong,nonatomic) UIImageView *profileImageView;
 @end
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 @implementation SFSDKUITableViewCell
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
@@ -62,9 +64,9 @@ static CGFloat kImageHeight = 60;
     self.profileImageView.clipsToBounds = YES;
     self.titleLabel = [[UILabel alloc] init];
     self.detailLabel = [[UILabel alloc] init];
-    self.titleLabel.font = [UIFont textRegular:16.0];
+    self.titleLabel.font = [UIFont sfsdk_textRegular:16.0];
     self.titleLabel.textColor = [UIColor salesforceLabelColor];
-    self.detailLabel.font = [UIFont textRegular:14.0];
+    self.detailLabel.font = [UIFont sfsdk_textRegular:14.0];
     self.detailLabel.textColor = [UIColor salesforceLabelColor];
     self.profileImageView.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -84,7 +86,11 @@ static CGFloat kImageHeight = 60;
 
     [self.detailLabel.topAnchor  constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:4].active = YES;
     
-   [self.detailLabel.leftAnchor  constraintEqualToAnchor:self.profileImageView.rightAnchor constant:12].active = YES;
+    [self.detailLabel.leftAnchor  constraintEqualToAnchor:self.profileImageView.rightAnchor constant:12].active = YES;
+
+    [self registerForTraitChanges:@[UITraitUserInterfaceStyle.self] withHandler:^(SFSDKUITableViewCell *cell, UITraitCollection *previousCollection) {
+        [cell updateLayerColor];
+    }];
     return self;
 }
 
@@ -92,14 +98,6 @@ static CGFloat kImageHeight = 60;
     self.layer.borderColor = [UIColor salesforceSystemBackgroundColor].CGColor;
 }
 
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
-    [super traitCollectionDidChange:previousTraitCollection];
-    if (@available(iOS 13.0, *)) {
-        if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
-            [self updateLayerColor];
-        }
-    }
-}
 
 - (void)awakeFromNib {
     [super awakeFromNib];
@@ -138,4 +136,5 @@ static CGFloat kImageHeight = 60;
     UIGraphicsEndImageContext();
     return image;
 }
+#pragma clang diagnostic pop
 @end

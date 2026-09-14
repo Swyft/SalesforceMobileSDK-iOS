@@ -29,6 +29,9 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
 #import "SFOAuthCoordinator+Internal.h"
 #import "SFIdentityCoordinator.h"
 
+// Prefix for the synthesized scene id used when a login starts before any UIScene has connected.
+static NSString * const kSFSDKAuthSessionUnscopedSceneIdPrefix = @"com.salesforce.mobilesdk.unscopedAuthSession-";
+
 @interface SFSDKAuthSession()
 @end
 
@@ -47,6 +50,9 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
         _credentials = (creds == nil) ? [self newClientCredentials] : creds;
         _credentials.jwt = request.jwtToken;
         _spAppCredentials = spAppCredentials;
+        // When no scene is connected yet, persistentIdentifier is nil; synthesize a unique per-session id
+        // so this session gets its own authSessions[] key and the browser callback can key back to it.
+        _sceneId = request.scene.session.persistentIdentifier ?: [kSFSDKAuthSessionUnscopedSceneIdPrefix stringByAppendingString:[[NSUUID UUID] UUIDString]];
         [self initCoordinator];
     }
     return self;
@@ -59,8 +65,8 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
     self.oauthCoordinator.additionalTokenRefreshParams = self.oauthRequest.additionalTokenRefreshParams;
     self.oauthCoordinator.scopes = self.oauthRequest.scopes;
     self.oauthCoordinator.brandLoginPath = self.oauthRequest.brandLoginPath;
-    self.oauthCoordinator.useBrowserAuth = self.oauthRequest.useBrowserAuth;
-    self.oauthCoordinator.userAgentForAuth = self.oauthRequest.userAgentForAuth;
+    self.oauthCoordinator.useBrowserAuth = self.oauthRequest.useBrowserAuth || self.oauthRequest.loginAsAdmin;
+    self.oauthCoordinator.dpopOverride = self.oauthRequest.useDPoP;
     if (_spAppCredentials && _spAppCredentials.domain) {
         self.oauthCoordinator.credentials.domain = _spAppCredentials.domain;
     }
@@ -72,6 +78,7 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
     creds.clientId = self.oauthRequest.oauthClientId;
     creds.redirectUri = self.oauthRequest.oauthCompletionUrl;
     creds.domain = self.oauthRequest.loginHost;
+    creds.scopes = [self.oauthRequest.scopes allObjects];
     creds.accessToken = nil;
     return creds;
 }

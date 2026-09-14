@@ -28,6 +28,7 @@
  */
 
 #import "SFSDKAuthErrorManager.h"
+#import "SFSDKAuthErrorManager+Internal.h"
 #import "SFAuthErrorHandlerList.h"
 #import "SFAuthErrorHandler.h"
 #import "SFOAuthCoordinator+Internal.h"
@@ -36,6 +37,7 @@
 #include "SFSDKOAuth2.h"
 #include "SFSDKAuthSession.h"
 // Auth error handler name constants
+static NSString * const kSFUserAgentErrorHandler = @"UserAgentErrorHandler";
 static NSString * const kSFInvalidCredentialsAuthErrorHandler = @"InvalidCredentialsErrorHandler";
 static NSString * const kSFConnectedAppVersionAuthErrorHandler = @"ConnectedAppVersionErrorHandler";
 static NSString * const kSFNetworkFailureAuthErrorHandler = @"NetworkFailureErrorHandler";
@@ -49,6 +51,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 @property (nonatomic, readwrite) SFAuthErrorHandler *networkFailureAuthErrorHandler;
 @property (nonatomic, readwrite) SFAuthErrorHandler *connectedAppVersionAuthErrorHandler;
 @property (nonatomic, readwrite) SFAuthErrorHandler *hostConnectionErrorHandler;
+@property (nonatomic, readwrite) SFAuthErrorHandler *userAgentErrorHandler;
 @end
 
 @implementation SFSDKAuthErrorManager
@@ -65,6 +68,20 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 {
     __weak typeof(self) weakSelf = self;
     SFAuthErrorHandlerList *authHandlerList = [[SFAuthErrorHandlerList alloc] init];
+    
+    
+    // User agent disabled handler
+    self.userAgentErrorHandler =
+        [[SFAuthErrorHandler alloc] initWithName:kSFUserAgentErrorHandler authSessionBlock:^BOOL(NSError *error, SFSDKAuthSession *authSession, NSDictionary *options) {
+            if ([error.localizedDescription containsString:@"user-agent flow has been disabled"]) {
+                if (self.genericErrorHandlerBlock) {
+                    self.genericErrorHandlerBlock(error, authSession, options);
+                    return YES;
+                }
+            }
+            return NO;
+        }];
+    [authHandlerList addAuthErrorHandler:self.userAgentErrorHandler];
     
     // Invalid credentials handler
     self.invalidCredentialsAuthErrorHandler = [[SFAuthErrorHandler alloc]
@@ -119,13 +136,19 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
                                            }];
     [authHandlerList addAuthErrorHandler:self.networkFailureAuthErrorHandler];
     
-    // Generic failure handler
+    // Host connection error handler.
+    //
+    // NSURLErrorTimedOut / CannotConnectToHost / NetworkConnectionLost / NotConnectedToInternet
+    // also appear in +errorIsNetworkFailure:. NetworkFailureErrorHandler runs first in the chain
+    // and claims those codes only on Refresh flows with an existing access token; all other
+    // contexts return NO there and fall through to this handler. Ordering is guarded by
+    // testNetworkFailureClaimsFirst_RefreshWithToken.
     self.hostConnectionErrorHandler = [[SFAuthErrorHandler alloc] initWithName:kSFHostConnectionErrorHandler
                                      authSessionBlock:^BOOL(NSError *error, SFSDKAuthSession *authSession, NSDictionary *options) {
-                                        if (error.userInfo[@"_kCFStreamErrorCodeKey"] && error.userInfo[@"_kCFStreamErrorDomainKey"] ) {
+                                        if ([[weakSelf class] errorIsHostConnectionFailure:error]) {
                                             if (self.hostConnectionErrorHandlerBlock) {
                                                 self.hostConnectionErrorHandlerBlock(error, authSession, options);
-                                                 return YES;
+                                                return YES;
                                             }
                                         }
                                         return NO;
@@ -161,7 +184,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 + (BOOL)errorIsInvalidAuthCredentials:(NSError *)error
 {
     BOOL errorIsInvalidCreds = NO;
-    if (error.domain == kSFOAuthErrorDomain) {
+    if ([error.domain isEqualToString:kSFOAuthErrorDomain]) {
         if (error.code == kSFOAuthErrorInvalidGrant) {
             errorIsInvalidCreds = YES;
         }
@@ -170,11 +193,43 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 /**
- * Evaluates an NSError object to see if it represents a network failure during
- * an attempted connection.
+ * Evaluates an NSError object to see if it represents a host-connection failure —
+ * an unreachable or non-existent login host — rather than a transient network
+ * failure on an otherwise reachable host.
  * @param error The NSError to evaluate.
- * @return YES if the error represents a network failure, NO otherwise.
+ * @return YES if the error should trigger the host-connection recovery path, NO otherwise.
  */
++ (BOOL)errorIsHostConnectionFailure:(NSError *)error
+{
+    if (error == nil || error.domain == nil) {
+        return NO;
+    }
+    // Legacy iOS <= 18 shape: CFNetwork stream stack attached _kCFStreamError* keys to userInfo.
+    if (error.userInfo[@"_kCFStreamErrorCodeKey"] && error.userInfo[@"_kCFStreamErrorDomainKey"]) {
+        return YES;
+    }
+    // OAuth invalid-URL is a bad-host signal.
+    if ([error.domain isEqualToString:kSFOAuthErrorDomain] && error.code == kSFOAuthErrorInvalidURL) {
+        return YES;
+    }
+    // iOS 26+ shape: DNS resolution moved to Network.framework, so the CFStream keys are absent.
+    // NSURLErrorDomain surfaces these codes with a bare userInfo instead.
+    if ([error.domain isEqualToString:NSURLErrorDomain]) {
+        switch (error.code) {
+            case NSURLErrorCannotFindHost:            // -1003
+            case NSURLErrorDNSLookupFailed:           // -1006
+            case NSURLErrorCannotConnectToHost:       // -1004
+            case NSURLErrorTimedOut:                  // -1001
+            case NSURLErrorNotConnectedToInternet:    // -1009
+            case NSURLErrorNetworkConnectionLost:     // -1005
+                return YES;
+            default:
+                break;
+        }
+    }
+    return NO;
+}
+
 + (BOOL)errorIsNetworkFailure:(NSError *)error
 {
     BOOL isNetworkFailure = NO;

@@ -26,35 +26,13 @@
 #import <Security/Security.h>
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
-#import "SFOAuthCredentials.h"
-#import "SFSDKOAuth2.h"
+#import <SalesforceSDKCore/SFOAuthCredentials.h>
+#import <SalesforceSDKCore/SFSDKOAuth2.h>
 NS_ASSUME_NONNULL_BEGIN
 
 @class SFOAuthCoordinator;
 @class SFOAuthInfo;
-
-
-
-/**
- Enumeration of different advanced authentication stages.
- */
-typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
-    /**
-     No advanced authentication is currently under way.
-     */
-    SFOAuthAdvancedAuthStateNotStarted = 0,
-    
-    /**
-     The advanced authentication flow has initiated a request through Safari view controller.
-     */
-    SFOAuthAdvancedAuthStateBrowserRequestInitiated,
-    
-    /**
-     The advanced authentication flow has received a response from Safari view controller, and has
-     initiated a token exchange request.
-     */
-    SFOAuthAdvancedAuthStateTokenRequestInitiated
-};
+@class SFUserAccount;
 
 /**
  Callback block used for the browser flow authentication.
@@ -99,16 +77,6 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  @param errorOrNil  Contains the error or `nil` if no error
  */
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didFinishLoad:(WKWebView *)view error:(nullable NSError*)errorOrNil;
-
-/**
- Sent when authentication successfully completes. Note: This method is deprecated.  You should use
- the `oauthCoordinatorDidAuthenticate:authInfo:` method instead.
- 
- @param coordinator The SFOAuthCoordinator instance processing this message
- 
- @see SFOAuthCoordinator
- */
-- (void)oauthCoordinatorDidAuthenticate:(SFOAuthCoordinator *)coordinator __attribute__((deprecated));
 
 /**
  Sent before oauthcoordinator will begin any kind of authentication
@@ -181,7 +149,7 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  Sent to notify the delegate that a  authentication code was retrieved during idp flow.
    @param coordinator The SFOAuthCoordinator instance processing this message.
  */
-- (void)oauthCoordinatorDidFetchAuthCode:(SFOAuthCoordinator *)coordinator authInfo:(SFOAuthInfo *)authInfo;
+- (void)oauthCoordinatorDidFetchAuthCode:(SFOAuthCoordinator *)coordinator authInfo:(SFOAuthInfo *)authInfo SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 @required
 
@@ -207,6 +175,15 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  @see SFOAuthCoordinator
  */
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithSession:(ASWebAuthenticationSession *)session;
+
+/**
+ Sent to notify the delegate that authentication via native REST APIs has begun.
+ 
+ @param coordinator The SFOAuthCoordinator instance processing this message
+ 
+ @see SFOAuthCoordinator
+ */
+- (void)oauthCoordinatorDidBeginNativeAuthentication:(SFOAuthCoordinator *)coordinator;
 
 /**
  Sent to notify the delegate that a browser authentication flow was cancelled out of by the user.
@@ -271,11 +248,6 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  */
 @property (nonatomic, assign) NSTimeInterval timeout;
 
-/**
- The current state of any in-progress advanced authentication flow.
- */
-@property (nonatomic, readonly) SFOAuthAdvancedAuthState advancedAuthState;
-
 /** View in which the user will input OAuth credentials for the user-agent flow OAuth process.
  
  This is only guaranteed to be non-`nil` after one of the delegate methods returning a web view has been called.
@@ -287,13 +259,6 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  Auth session through which the user will input OAuth credentials for the user-agent flow OAuth process.
  */
 @property (nonatomic, readonly, null_unspecified) ASWebAuthenticationSession *asWebAuthenticationSession;
-
-/**
- The user agent string that will be used for authentication.  While this property will persist throughout
- the lifetime of the coordinator object, the user agent configured for the system will be reset back to
- its original value in between authentication requests.
- */
-@property (nonatomic, copy) NSString *userAgentForAuth;
 
 /**
  An array of additional keys (NSString) to parse during OAuth
@@ -311,13 +276,15 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  */
 @property (nonatomic, copy) NSString *brandLoginPath;
 
-/** Setup the coordinator to use SafariViewController for authentication.
+/** Setup the coordinator to use ASWebAuthenticationSession for authentication.
  */
 @property (nonatomic, assign) BOOL useBrowserAuth;
     
-/** Setup the coordinator to use SafariViewController for authentication.
-   */
 @property (nonatomic, strong) id<SFSDKOAuthProtocol>authClient;
+
+/** Setup the coordinator to use an app provided native UI for authentication.
+ */
+@property (nonatomic, assign) BOOL useNativeAuth;
 
 ///---------------------------------------------------------------------------------------
 /// @name Initialization
@@ -375,9 +342,9 @@ typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
  */
 - (BOOL)handleAdvancedAuthenticationResponse:(NSURL *)appUrlResponse;
 
-- (BOOL)handleIDPAuthenticationResponse:(NSURL *)appUrlResponse;
+- (BOOL)handleIDPAuthenticationResponse:(NSURL *)appUrlResponse SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
-- (void)beginIDPFlow;
+- (void)beginIDPFlow:(SFUserAccount *)user success:(void(^)(void))successBlock failure:(void(^)(NSError *))failureBlock SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 @end
 

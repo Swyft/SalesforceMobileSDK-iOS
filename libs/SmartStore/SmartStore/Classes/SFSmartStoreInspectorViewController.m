@@ -32,6 +32,7 @@
 #import <SalesforceSDKCommon/SFJsonUtils.h>
 #import <SalesforceSDKCore/SFUserAccountManager.h>
 #import <SalesforceSDKCore/UIColor+SFColors.h>
+#import "SFSmartStore+Internal.h"
 
 // Nav bar
 static CGFloat      const kNavBarHeight          = 44.0;
@@ -344,7 +345,7 @@ static NSString * const kInspectorPickerDefault = @"default";
     [navBar setItems:@[navItem] animated:YES];
     navBar.translucent = NO;
     navBar.barTintColor = [UIColor salesforceBlueColor];
-    navBar.tintColor = [UIColor whiteColor];
+    navBar.tintColor = [UIColor salesforceNavBarTintColor];
     navBar.titleTextAttributes = @{NSForegroundColorAttributeName: [UIColor whiteColor], NSFontAttributeName:[UIFont systemFontOfSize:kNavBarTitleFontSize]};
     [self.view addSubview:navBar];
     return navBar;
@@ -450,10 +451,6 @@ static NSString * const kInspectorPickerDefault = @"default";
     [self.resultGrid reloadData];
 }
 
-- (BOOL)shouldAutorotate {
-    return YES;
-}
-
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
     return UIInterfaceOrientationMaskAll;
 }
@@ -518,17 +515,11 @@ static NSString * const kInspectorPickerDefault = @"default";
 }
 
 - (UIColor *)textColor {
-    if (@available(iOS 13.0, *)) {
-        return [UIColor labelColor];
-    }
-    return [UIColor blackColor];
+    return [UIColor labelColor];
 }
 
 - (CGColorRef)borderColor {
-    if (@available(iOS 13.0, *)) {
-        return [UIColor separatorColor].CGColor;
-    }
-    return [UIColor lightGrayColor].CGColor;
+    return [UIColor separatorColor].CGColor;
 }
 
 #pragma mark - Text view delegate

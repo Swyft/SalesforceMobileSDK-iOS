@@ -27,7 +27,46 @@
 #import "SFOAuthSessionRefresher+Internal.h"
 #import "SFOAuthCoordinator+Internal.h"
 #import "SFUserAccount+Internal.h"
+#import "SFUserAccountManager+Internal.h"
 #import "SFOAuthCredentials+Internal.h"
+#import "SFSDKOAuth2+Internal.h"
+#import "SFSDKAppFeatureMarkers.h"
+#import "SFSDKOAuthConstants.h"
+
+// Expose the private initializer used in production code.
+@interface SFSDKOAuthTokenEndpointResponse ()
+- (instancetype)initWithDictionary:(NSDictionary *)nvPairs parseAdditionalFields:(NSArray<NSString *> *)additionalOAuthParameterKeys;
+@end
+
+static NSSet<NSString *> *SFSDKFeatureMarkersFromUserAgent(NSString *userAgent) {
+    NSRange featurePrefixRange = [userAgent rangeOfString:@"ftr_"];
+    if (featurePrefixRange.location == NSNotFound) return [NSSet set];
+    NSString *featureSuffix = [userAgent substringFromIndex:NSMaxRange(featurePrefixRange)];
+    NSString *featureString = [featureSuffix componentsSeparatedByString:@" "].firstObject ?: @"";
+    return [NSSet setWithArray:[featureString componentsSeparatedByString:@"."]];
+}
+
+// Minimal SFSDKOAuthProtocol stub that immediately calls the completion block with a preset response.
+@interface SFSDKOAuthClientStub : NSObject <SFSDKOAuthProtocol>
+@property (nonatomic, strong) SFSDKOAuthTokenEndpointResponse *stubbedResponse;
+@property (nonatomic, strong, nullable) SFSDKOAuthTokenEndpointRequest *capturedRefreshRequest;
+@end
+
+@implementation SFSDKOAuthClientStub
+- (void)accessTokenForRefresh:(SFSDKOAuthTokenEndpointRequest *)endpointReq
+                   completion:(void (^)(SFSDKOAuthTokenEndpointResponse *))completionBlock {
+    self.capturedRefreshRequest = endpointReq;
+    completionBlock(self.stubbedResponse);
+}
+- (void)accessTokenForApprovalCode:(SFSDKOAuthTokenEndpointRequest *)endpointReq
+                        completion:(void (^)(SFSDKOAuthTokenEndpointResponse *))completionBlock {}
+- (void)openIDTokenForRefresh:(SFSDKOAuthTokenEndpointRequest *)endpointReq
+                   completion:(void (^)(NSString *))completionBlock {}
+- (void)revokeRefreshToken:(SFOAuthCredentials *)credentials reason:(SFLogoutReason)reason {}
+@end
+
+// TODO: Remove deprecated warning suppression when SFOAuthSessionRefresher is internal in Mobile SDK 15.0
+SFSDK_USE_DEPRECATED_BEGIN
 
 @interface SFOAuthSessionRefresherTests : XCTestCase
 
@@ -123,6 +162,195 @@
     }];
 }
 
+- (void)test_givenRotatedRefreshToken_whenRefreshSucceeds_thenRTFlagRegisteredPerUser {
+    // Arrange: register a user account whose credentials match the refresher's.
+    SFOAuthCredentials *creds = self.oauthSessionRefresher.credentials;
+    SFUserAccount *account = [[SFUserAccount alloc] initWithCredentials:creds];
+    [[SFUserAccountManager sharedInstance] saveAccountForUser:account error:nil];
+
+    NSString *newRefreshToken = [NSString stringWithFormat:@"rotated_token_%u", arc4random()];
+    NSDictionary *responseDict = @{
+        kSFOAuthAccessToken: @"new_access_token",
+        kSFOAuthRefreshToken: newRefreshToken,
+    };
+    SFSDKOAuthTokenEndpointResponse *response = [[SFSDKOAuthTokenEndpointResponse alloc]
+                                                  initWithDictionary:responseDict
+                                                  parseAdditionalFields:nil];
+    SFSDKOAuthClientStub *stub = [[SFSDKOAuthClientStub alloc] init];
+    stub.stubbedResponse = response;
+    SFAuthClientFactoryBlock originalFactory = [SFUserAccountManager sharedInstance].authClient;
+    [SFUserAccountManager sharedInstance].authClient = ^{ return stub; };
+
+    // Pre-condition: RT flag not set
+    [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureRTR forUser:account];
+
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Refresh with rotated token"];
+    [self.oauthSessionRefresher refreshSessionWithCompletion:^(SFOAuthCredentials *updatedCredentials) {
+        [expectation fulfill];
+    } error:^(NSError *error) {
+        XCTFail(@"Refresh should not fail: %@", error);
+        [expectation fulfill];
+    }];
+
+    [self waitForExpectationsWithTimeout:2.0 handler:nil];
+
+    // Assert: RT flag registered for the user
+    NSSet *features = [SFSDKAppFeatureMarkers appFeaturesForUser:account];
+    XCTAssertTrue([features containsObject:kSFAppFeatureRTR],
+                  @"RT flag should be registered after refresh token rotation");
+
+    // Assert: timestamp was stamped
+    XCTAssertNotNil(account.credentials.lastTokenRotationDate, @"Expected rotation timestamp to be stamped");
+    XCTAssertLessThan(fabs([account.credentials.lastTokenRotationDate timeIntervalSinceNow]), 5.0,
+                      @"Rotation timestamp should be within 5 seconds of now");
+
+    // Cleanup
+    [SFUserAccountManager sharedInstance].authClient = originalFactory;
+    [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureRTR forUser:account];
+    [[SFUserAccountManager sharedInstance] deleteAccountForUser:account error:nil];
+}
+
+- (void)test_givenDPoPBoundCredential_whenRefresh_thenEndpointRequestCarriesTokenTypeAndScope {
+    // Given: a DPoP-bound credential (tokenType = "DPoP") with a scope identifier
+    SFOAuthCredentials *creds = self.oauthSessionRefresher.credentials;
+    creds.tokenType = @"DPoP";
+    NSString *expectedScope = creds.identifier;
+
+    NSDictionary *responseDict = @{ kSFOAuthAccessToken: @"new_access_token",
+                                    kSFOAuthRefreshToken: creds.refreshToken };
+    SFSDKOAuthTokenEndpointResponse *response = [[SFSDKOAuthTokenEndpointResponse alloc]
+                                                  initWithDictionary:responseDict
+                                                  parseAdditionalFields:nil];
+    SFSDKOAuthClientStub *stub = [[SFSDKOAuthClientStub alloc] init];
+    stub.stubbedResponse = response;
+    SFAuthClientFactoryBlock originalFactory = [SFUserAccountManager sharedInstance].authClient;
+    [SFUserAccountManager sharedInstance].authClient = ^{ return stub; };
+
+    // When: refresh runs
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Refresh carries DPoP tokenType"];
+    [self.oauthSessionRefresher refreshSessionWithCompletion:^(SFOAuthCredentials *updatedCredentials) {
+        [expectation fulfill];
+    } error:^(NSError *error) {
+        XCTFail(@"Refresh should not fail: %@", error);
+        [expectation fulfill];
+    }];
+    [self waitForExpectationsWithTimeout:2.0 handler:nil];
+
+    // Then: the outbound endpoint request carries both signals the DPoP layer needs
+    XCTAssertNotNil(stub.capturedRefreshRequest, @"Stub should have captured the refresh request");
+    XCTAssertEqualObjects(stub.capturedRefreshRequest.tokenType, @"DPoP",
+                          @"Refresher must forward credentials.tokenType so DPoP gating survives a global-flag flip");
+    XCTAssertEqualObjects(stub.capturedRefreshRequest.credentialsIdentifier, expectedScope,
+                          @"Refresher must forward credentials.identifier as the DPoP scope");
+
+    // Cleanup
+    [SFUserAccountManager sharedInstance].authClient = originalFactory;
+}
+
+- (void)test_givenCredentialOwnerDiffersFromCurrentUser_whenRefresh_thenEndpointRequestCarriesOwnerUserAgent {
+    SFUserAccountManager *accountManager = [SFUserAccountManager sharedInstance];
+    SFUserAccount *originalCurrentUser = accountManager.currentUser;
+
+    SFOAuthCredentials *ownerCredentials = self.oauthSessionRefresher.credentials;
+    SFUserAccount *ownerAccount = [[SFUserAccount alloc] initWithCredentials:ownerCredentials];
+    [accountManager saveAccountForUser:ownerAccount error:nil];
+    [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureRTR forUser:ownerAccount];
+    [SFSDKAppFeatureMarkers registerAppFeature:@"OW" forUser:ownerAccount];
+
+    SFOAuthCredentials *currentCredentials = [[SFOAuthCredentials alloc]
+                                               initWithIdentifier:[NSString stringWithFormat:@"CurrentCredentials_%u", arc4random()]
+                                               clientId:@"current-client-id"
+                                               encrypted:YES];
+    currentCredentials.userId = @"005000000000002";
+    currentCredentials.organizationId = @"00D000000000002";
+    currentCredentials.instanceUrl = [NSURL URLWithString:@"https://cs2.salesforce.com"];
+    currentCredentials.accessToken = @"current-access-token";
+    currentCredentials.refreshToken = @"current-refresh-token";
+    SFUserAccount *currentAccount = [[SFUserAccount alloc] initWithCredentials:currentCredentials];
+    [accountManager saveAccountForUser:currentAccount error:nil];
+    [SFSDKAppFeatureMarkers registerAppFeature:@"CU" forUser:currentAccount];
+    [accountManager setCurrentUserInternal:currentAccount];
+
+    NSDictionary *responseDict = @{ kSFOAuthAccessToken: @"new_access_token",
+                                    kSFOAuthRefreshToken: ownerCredentials.refreshToken };
+    SFSDKOAuthTokenEndpointResponse *response = [[SFSDKOAuthTokenEndpointResponse alloc]
+                                                  initWithDictionary:responseDict
+                                                  parseAdditionalFields:nil];
+    SFSDKOAuthClientStub *stub = [[SFSDKOAuthClientStub alloc] init];
+    stub.stubbedResponse = response;
+    SFAuthClientFactoryBlock originalFactory = accountManager.authClient;
+    accountManager.authClient = ^{ return stub; };
+
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Refresh carries credential-owner User-Agent"];
+    [self.oauthSessionRefresher refreshSessionWithCompletion:^(SFOAuthCredentials *updatedCredentials) {
+        [expectation fulfill];
+    } error:^(NSError *error) {
+        XCTFail(@"Refresh should not fail: %@", error);
+        [expectation fulfill];
+    }];
+    [self waitForExpectationsWithTimeout:2.0 handler:nil];
+
+    NSString *userAgent = stub.capturedRefreshRequest.userAgent;
+    XCTAssertNotNil(userAgent, @"Refresh endpoint request must carry an explicit credential-owner User-Agent");
+    NSSet<NSString *> *featureMarkers = SFSDKFeatureMarkersFromUserAgent(userAgent);
+    XCTAssertTrue([featureMarkers containsObject:@"OW"], @"Owner marker should be present in %@", userAgent);
+    XCTAssertTrue([featureMarkers containsObject:@"RT"], @"Persisted RT marker should be present in %@", userAgent);
+    XCTAssertFalse([featureMarkers containsObject:@"CU"], @"Ambient current-user marker must not leak into %@", userAgent);
+
+    accountManager.authClient = originalFactory;
+    [accountManager setCurrentUserInternal:originalCurrentUser];
+    [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureRTR forUser:ownerAccount];
+    [SFSDKAppFeatureMarkers unregisterAppFeature:@"OW" forUser:ownerAccount];
+    [SFSDKAppFeatureMarkers unregisterAppFeature:@"CU" forUser:currentAccount];
+    [accountManager deleteAccountForUser:ownerAccount error:nil];
+    [accountManager deleteAccountForUser:currentAccount error:nil];
+}
+
+- (void)test_givenUnchangedRefreshToken_whenRefreshSucceeds_thenRTFlagNotRegistered {
+    // Arrange: same refresh token in response — no rotation
+    SFOAuthCredentials *creds = self.oauthSessionRefresher.credentials;
+    SFUserAccount *account = [[SFUserAccount alloc] initWithCredentials:creds];
+    [[SFUserAccountManager sharedInstance] saveAccountForUser:account error:nil];
+
+    // Pre-seed a known prior timestamp
+    account.credentials.lastTokenRotationDate = [NSDate dateWithTimeIntervalSince1970:1234567890];
+
+    NSDictionary *responseDict = @{
+        kSFOAuthAccessToken: @"new_access_token",
+        kSFOAuthRefreshToken: creds.refreshToken,  // same token — no rotation
+    };
+    SFSDKOAuthTokenEndpointResponse *response = [[SFSDKOAuthTokenEndpointResponse alloc]
+                                                  initWithDictionary:responseDict
+                                                  parseAdditionalFields:nil];
+    SFSDKOAuthClientStub *stub = [[SFSDKOAuthClientStub alloc] init];
+    stub.stubbedResponse = response;
+    SFAuthClientFactoryBlock originalFactory = [SFUserAccountManager sharedInstance].authClient;
+    [SFUserAccountManager sharedInstance].authClient = ^{ return stub; };
+
+    XCTestExpectation *expectation = [self expectationWithDescription:@"Refresh without rotation"];
+    [self.oauthSessionRefresher refreshSessionWithCompletion:^(SFOAuthCredentials *updatedCredentials) {
+        [expectation fulfill];
+    } error:^(NSError *error) {
+        XCTFail(@"Refresh should not fail: %@", error);
+        [expectation fulfill];
+    }];
+
+    [self waitForExpectationsWithTimeout:2.0 handler:nil];
+
+    // Assert: RT flag NOT registered
+    NSSet *features = [SFSDKAppFeatureMarkers appFeaturesForUser:account];
+    XCTAssertFalse([features containsObject:kSFAppFeatureRTR],
+                   @"RT flag should not be registered when refresh token did not rotate");
+
+    // Assert: timestamp preserved
+    XCTAssertEqualWithAccuracy([account.credentials.lastTokenRotationDate timeIntervalSince1970], 1234567890, 0.001,
+                               @"Rotation timestamp must be preserved when no rotation occurred");
+
+    // Cleanup
+    [SFUserAccountManager sharedInstance].authClient = originalFactory;
+    [[SFUserAccountManager sharedInstance] deleteAccountForUser:account error:nil];
+}
+
 #pragma mark - Private methods
 
 - (void)setupCoordinatorFlow {
@@ -135,6 +363,10 @@
     creds.instanceUrl = [NSURL URLWithString:@"https://cs1.salesforce.com"];
     creds.accessToken = credsAccessToken;
     creds.refreshToken = credsRefreshToken;
+    // Set userId and orgId as valid 15-char Salesforce entity IDs so matchesCredentials: can compare them.
+    // (sfsdk_entityId18 returns nil for non-conforming strings, making isEqualToString:nil == NO.)
+    creds.userId = @"005000000000001";
+    creds.organizationId = @"00D000000000001";
     self.oauthSessionRefresher = [[SFOAuthSessionRefresher alloc] initWithCredentials:creds];
 }
 
@@ -144,3 +376,5 @@
 }
 
 @end
+
+SFSDK_USE_DEPRECATED_END

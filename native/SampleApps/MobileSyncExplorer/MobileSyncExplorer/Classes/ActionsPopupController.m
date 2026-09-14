@@ -47,14 +47,9 @@ NSString *const kActionDbInspector = @"Inspect db";
 
 #pragma mark - View lifecycle
 
--(BOOL)shouldAutorotate
-{
-    return NO;
-}
-
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
-    return UIInterfaceOrientationMaskPortrait;
+    return UIInterfaceOrientationMaskAll;
 }
 
 #pragma mark - Table view data source

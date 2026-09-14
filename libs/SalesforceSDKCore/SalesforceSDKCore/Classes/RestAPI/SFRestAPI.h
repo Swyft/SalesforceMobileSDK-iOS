@@ -23,13 +23,15 @@
  */
 
 #import <Foundation/Foundation.h>
-#import "SFRestRequest.h"
-#import "SFSObjectTree.h"
-#import "SFUserAccount.h"
-#import "SalesforceSDKConstants.h"
+#import <SalesforceSDKCore/SFRestRequest.h>
+#import <SalesforceSDKCore/SFSObjectTree.h>
+#import <SalesforceSDKCore/SFUserAccount.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef void (^SFRestRequestFailBlock) (id _Nullable response, NSError * _Nullable e, NSURLResponse * _Nullable rawResponse) NS_SWIFT_NAME(RestRequestFailBlock);
+typedef void (^SFRestResponseBlock) (id _Nullable response, NSURLResponse * _Nullable rawResponse) NS_SWIFT_NAME(RestResponseBlock);
 /*
  * Domain used for errors reported by the rest API (non HTTP errors)
  * (for example, passing an invalid SOQL string when doing a query)
@@ -42,7 +44,7 @@ extern NSString* const kSFRestErrorDomain NS_SWIFT_NAME(SFRestErrorDomain);
 extern NSInteger const kSFRestErrorCode NS_SWIFT_NAME(SFRestErrorCode);
 
 /*
- * Default API version (currently "v49.0")
+ * Default API version (currently "v66.0")
  * You can override this by using setApiVersion:
  */
 extern NSString* const kSFRestDefaultAPIVersion NS_SWIFT_NAME(SFRestDefaultAPIVersion);
@@ -51,6 +53,19 @@ extern NSString* const kSFRestDefaultAPIVersion NS_SWIFT_NAME(SFRestDefaultAPIVe
  * Misc keys appearing in requests
  */
 extern NSString* const kSFRestIfUnmodifiedSince NS_SWIFT_NAME(SFRestIfUnmodifiedSince);
+
+/**
+ * SOQL batch related constants
+ */
+extern NSInteger const kSFRestSOQLMinBatchSize NS_SWIFT_NAME(SFRestSOQLMinBatchSize);
+extern NSInteger const kSFRestSOQLMaxBatchSize NS_SWIFT_NAME(SFRestSOQLMaxBatchSize);
+extern NSInteger const kSFRestSOQLDefaultBatchSize NS_SWIFT_NAME(SFRestSOQLDefaultBatchSize);
+extern NSString* const kSFRestQueryOptions NS_SWIFT_NAME(SFRestQueryOptions);
+
+/**
+ Other constants
+ */
+extern NSInteger const kSFRestCollectionRetrieveMaxSize NS_SWIFT_NAME(SFRestCollectionRetrieveMaxSize);
 
 /**
  * Main class used to issue REST requests to the standard Force.com REST API.
@@ -62,7 +77,7 @@ NS_SWIFT_NAME(RestClient)
 
 /**
  * The REST API version used for all the calls.
-* The default value is `kSFRestDefaultAPIVersion` (currently "v49.0")
+* The default value is `kSFRestDefaultAPIVersion` (currently "v66.0")
  */
 @property (nonatomic, strong) NSString *apiVersion;
 
@@ -110,29 +125,40 @@ NS_SWIFT_NAME(RestClient)
 
 /**
  * Sends a REST request to the Salesforce server and invokes the appropriate delegate method.
- * @param request `SFRestRequest` object to be sent.
- * @param delegate Delegate object that handles the server response. 
- * This value overwrites the delegate property of the request.
- */
-- (void)send:(SFRestRequest *)request delegate:(nullable id<SFRestDelegate>)delegate SFSDK_DEPRECATED("8.2", "9.0", "Will be removed in Mobile SDK 9.0, use send:request:requestDelegate instead.");
-
-/**
- * Sends a REST request to the Salesforce server and invokes the appropriate delegate method.
  *
  * @param request `SFRestRequest` object to be sent.
  * @param requestDelegate Delegate object that handles the server response.
  */
 - (void)send:(SFRestRequest *)request requestDelegate:(nullable id<SFRestRequestDelegate>)requestDelegate;
 
+/**
+ * Sends a REST request to the Salesforce server
+ *
+ * @param request `SFRestRequest` object to be sent.
+ * @param failureBlock Block that is called back for failure of request
+ * @param successBlock Block that is called back for success of request
+ */
+- (void)send:(SFRestRequest *_Nonnull)request
+failureBlock:(SFRestRequestFailBlock _Nonnull )failureBlock
+successBlock:(SFRestResponseBlock _Nonnull )successBlock;
+
 ///---------------------------------------------------------------------------------------
 /// @name SFRestRequest factory methods
 ///---------------------------------------------------------------------------------------
 
 /**
- * Returns an `SFRestRequest` object that contains information associated with the current user.
+ * Returns an `SFRestRequest` object that returns information associated with the current user.
  * @see https://help.salesforce.com/articleView?id=remoteaccess_using_userinfo_endpoint.htm
  */
 - (SFRestRequest *)requestForUserInfo;
+
+/**
+ * Returns an `SFRestRequest` object that returns URL to bridge into UI sessions (a front door URL).
+ * @param redirectUri A relative path that points to where the user is redirected when their new session begins.
+ * @see https://help.salesforce.com/s/articleView?id=sf.frontdoor_singleaccess.htm
+ */
+- (SFRestRequest *)requestForSingleAccess:(NSString *)redirectUri;
+
 
 /**
  * Returns an `SFRestRequest` object that lists summary information about each
@@ -141,6 +167,17 @@ NS_SWIFT_NAME(RestClient)
  * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_versions.htm
  */
 - (SFRestRequest *)requestForVersions;
+
+/**
+ * Returns an `SFRestRequest` object that returns information about limits in your org
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_limits.htm
+ */
+- (SFRestRequest *)requestForLimits:(nullable NSString *)apiVersion;
+
+/**
+ * Returns an `SFRestRequest` object for a cheap request to re-hydrate the access token
+ */
+- (SFRestRequest *)cheapRequest:(nullable NSString *)apiVersion;
 
 /**
  * Returns an `SFRestRequest` object that lists available resources for the
@@ -175,16 +212,6 @@ NS_SWIFT_NAME(RestClient)
  * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_sobject_describe.htm
  */
 - (SFRestRequest *)requestForDescribeWithObjectType:(NSString *)objectType apiVersion:(nullable NSString *)apiVersion;
-
-/**
- * Returns an `SFRestRequest` object that provides layout data for the specified object and layout type.
- *
- * @param objectType Type of a Salesforce object. Example: "Account".
- * @param layoutType Layout type. Supported types are "Full" and "Compact". Default is "Full".
- * @param apiVersion API version.
- * @see https://developer.salesforce.com/docs/atlas.en-us.uiapi.meta/uiapi/ui_api_resources_record_layout.htm
- */
-- (SFRestRequest *)requestForLayoutWithObjectType:(nonnull NSString *)objectType layoutType:(nullable NSString *)layoutType apiVersion:(nullable NSString *)apiVersion SFSDK_DEPRECATED("8.2", "9.0", "Will be removed in Mobile SDK 9.0, use requestForLayoutWithObjectAPIName:objectAPIName:formFactor:layoutType:mode:recordTypeId:apiVersion instead.");
 
 /**
  * Returns an `SFRestRequest` object that provides layout data for the specified parameters.
@@ -300,6 +327,16 @@ NS_SWIFT_NAME(RestClient)
 
 /**
  * Returns an `SFRestRequest` object that executes the specified SOQL query.
+ * @param soql String containing the query to execute. Example: "SELECT Id,
+ *             Name from Account ORDER BY Name LIMIT 20".
+ * @param apiVersion API version.
+ * @param batchSize Batch size: number between 200 and 2000 (default).
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_query.htm
+ */
+- (SFRestRequest *)requestForQuery:(NSString *)soql apiVersion:(nullable NSString *)apiVersion batchSize:(NSInteger)batchSize;
+
+/**
+ * Returns an `SFRestRequest` object that executes the specified SOQL query.
  * The result includes deleted objects.
  * @param soql String containing the query to execute. Example: "SELECT Id,
  *             Name from Account ORDER BY Name LIMIT 20".
@@ -359,6 +396,79 @@ NS_SWIFT_NAME(RestClient)
  * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_composite_sobject_tree.htm
  */
 - (SFRestRequest*) requestForSObjectTree:(NSString *)objectType objectTrees:(NSArray<SFSObjectTree *> *)objectTrees apiVersion:(nullable NSString *)apiVersion;
+
+/**
+ * Returns an `SFRestRequest` object for getting list of record related to offline briefcase
+ *
+ * @param relayToken Relay token (to get next page of results)
+ * @param timestamp To only get ids of records that changed after given time - or nil
+ * @param apiVersion Salesforce API version.
+ *
+ * @see https://developer.salesforce.com/docs/atlas.en-us.chatterapi.meta/chatterapi/connect_resources_briefcase_priming_records.htm
+ */
+- (SFRestRequest*) requestForPrimingRecords:(nullable NSString *)relayToken changedAfterTimestamp:(nullable NSNumber *)timestamp apiVersion:(nullable NSString *)apiVersion;
+
+/**
+ * Returns an `SFRestRequest` object for creating multiple records with fewer round trips
+ *
+ * @param allOrNone Indicates whether to roll back the entire request when the creation of any object fails (true) or to continue with the independent creation of other objects in the request.
+ * @param records Array of sObjects.
+ * @param apiVersion Salesforce API version.
+ *
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_composite_sobjects_collections_create.htm
+ */
+- (SFRestRequest*) requestForCollectionCreate:(BOOL)allOrNone records:(NSArray<NSDictionary*>*)records apiVersion:(nullable NSString *)apiVersion;
+
+
+/**
+ * Returns an `SFRestRequest` object for retrieving multiple records with fewer round trips
+ *
+ * @param objectType Type of the requested record.
+ * @param objectIds Array of Salesforce IDs of the requested records.
+ * @param fieldList Array of requested field names.
+ * @param apiVersion Salesforce API version.
+ *
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_composite_sobjects_collections_retrieve.htm
+ */
+- (SFRestRequest*) requestForCollectionRetrieve:(NSString*)objectType objectIds:(NSArray<NSString*>*)objectIds fieldList:(NSArray<NSString*>*)fieldList apiVersion:(nullable NSString *)apiVersion;
+
+
+/**
+ * Returns an `SFRestRequest` object for updating multiple records with fewer round trips
+ *
+ * @param allOrNone Indicates whether to roll back the entire request when the update of any object fails (true) or to continue with the independent update of other objects in the request.
+ * @param records Array of sObjects.
+ * @param apiVersion Salesforce API version.
+ *
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_composite_sobjects_collections_update.htm
+ */
+- (SFRestRequest*) requestForCollectionUpdate:(BOOL)allOrNone records:(NSArray<NSDictionary*>*)records apiVersion:(nullable NSString *)apiVersion;
+
+
+/**
+ * Returns an `SFRestRequest` object for upserting multiple records with fewer round trips
+ *
+ * @param allOrNone Indicates whether to roll back the entire request when the upsert of any object fails (true) or to continue with the independent upsert of other objects in the request.
+ * @param objectType Type of the requested record.
+ * @param externalIdField Name of ID field in source data.
+ * @param records Array of sObjects.
+ * @param apiVersion Salesforce API version.
+ *
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_composite_sobjects_collections_upsert.htm
+ */
+- (SFRestRequest*) requestForCollectionUpsert:(BOOL)allOrNone objectType:(NSString*)objectType externalIdField:(NSString*)externalIdField records:(NSArray<NSDictionary*>*)records apiVersion:(nullable NSString *)apiVersion;
+
+
+/**
+ * Returns an `SFRestRequest` object for deleting multiple records with fewer round trips
+ * @param allOrNone Indicates whether to roll back the entire request when the delete of any object fails (true) or to continue with the independent delete of other objects in the request.
+ * @param objectIds List of Salesforce IDs of the records to delete.
+ * @param apiVersion Salesforce API version.
+ *
+ * @see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_composite_sobjects_collections_delete.htm
+ */
+- (SFRestRequest*) requestForCollectionDelete:(BOOL)allOrNone objectIds:(NSArray<NSString*>*)objectIds apiVersion:(nullable NSString *)apiVersion;
+
 
 ///---------------------------------------------------------------------------------------
 /// @name Other utility methods

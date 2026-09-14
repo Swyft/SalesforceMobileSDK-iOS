@@ -1,17 +1,30 @@
 {
   "syncs": [
-    {
-      "syncName": "soqlSyncDown",
-      "syncType": "syncDown",
-      "soupName": "accounts",
-      "target": {
-        "type":"soql",
-        "query":"SELECT Id, Name, LastModifiedDate FROM Account"
+      {
+        "syncName": "soqlSyncDown",
+        "syncType": "syncDown",
+        "soupName": "accounts",
+        "target": {
+          "type":"soql",
+          "query":"SELECT Id, Name, LastModifiedDate FROM Account"
+        },
+        "options": {
+          "mergeMode":"OVERWRITE"
+        }
       },
-      "options": {
-        "mergeMode":"OVERWRITE"
-      }
-    },
+      {
+        "syncName": "soqlSyncDownWithBatchSize",
+        "syncType": "syncDown",
+        "soupName": "accounts",
+        "target": {
+          "type":"soql",
+          "query":"SELECT Id, Name, LastModifiedDate FROM Account",
+          "maxBatchSize": 200
+        },
+        "options": {
+          "mergeMode":"OVERWRITE"
+        }
+      },
     {
       "syncName": "soslSyncDown",
       "syncType": "syncDown",
@@ -111,6 +124,31 @@
       }
     },
     {
+      "syncName": "briefcaseSyncDown",
+      "syncType": "syncDown",
+      "soupName": "does-not-matter",
+      "target": {
+        "infos": [
+          {
+            "sobjectType": "Account",
+            "fieldlist": ["Name", "Description"],
+            "soupName": "accounts"
+          },
+          {
+            "sobjectType": "Contact",
+            "fieldlist": ["FirstName"],
+            "idFieldName" : "IdX",
+            "modificationDateFieldName": "LastModifiedDateX",
+            "soupName": "contacts"
+          }
+        ],
+        "type" : "briefcase"
+      },
+      "options": {
+        "mergeMode": "OVERWRITE"
+      }
+    },
+    {
       "syncName": "noBatchSyncUp",
       "syncType": "syncUp",
       "soupName": "accounts",
@@ -148,6 +186,7 @@
         "androidImpl": "com.salesforce.androidsdk.mobilesync.target.ParentChildrenSyncUpTarget",
         "parent" : {
           "idFieldName" : "IdX",
+          "externalIdFieldName": "ExternalIdX",
           "sobjectType" : "Account",
           "modificationDateFieldName" : "LastModifiedDateX",
           "soupName" : "accounts"
@@ -157,6 +196,7 @@
         "children" : {
           "parentIdFieldName" : "AccountId",
           "idFieldName" : "IdY",
+          "externalIdFieldName": "ExternalIdY",
           "sobjectType" : "Contact",
           "modificationDateFieldName" : "LastModifiedDateY",
           "soupName" : "contacts",

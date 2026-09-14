@@ -1,0 +1,1279 @@
+import XCTest
+@testable import SalesforceSDKCore
+
+class PushNotificationManagerTests: XCTestCase {
+
+    var pushNotificationManager: PushNotificationManager!
+    var mockRestClient: MockRestClient!
+    var currentUserAccount: UserAccount!
+    var currentUserPreferences: MockPreferences!
+    var mockApplicationHelper: MockApplicationHelper!
+    var originalMethod: IMP?
+    
+    
+    override func setUpWithError() throws {
+        super.setUp()
+        
+        currentUserPreferences = MockPreferences()
+        currentUserPreferences.setObject("current-user-sfid", forKey: PushNotificationConstants.deviceSalesforceId)
+        
+        currentUserAccount = try makeUserAccount(index: 0)
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        
+        mockRestClient = MockRestClient()
+        mockRestClient.apiVersion = SFRestDefaultAPIVersion
+        
+        mockApplicationHelper = MockApplicationHelper()
+        mockApplicationHelper.client = mockRestClient
+        mockApplicationHelper.preferencesMap[currentUserAccount.accountIdentity] = currentUserPreferences
+        
+        pushNotificationManager = PushNotificationManager(notificationRegister: mockApplicationHelper)
+        pushNotificationManager.isSimulator = false
+    }
+
+    override func tearDown() {
+        // Restore original method
+        if let originalMethod = originalMethod {
+            let originalSelector = #selector(SFPreferences.sharedPreferences(for:user:))
+            class_replaceMethod(SFPreferences.self, originalSelector, originalMethod, "@@:@@")
+        }
+
+        currentUserAccount = nil
+        pushNotificationManager = nil
+        mockRestClient = nil
+        mockApplicationHelper = nil
+        UserAccountManager.shared.currentUserAccount = nil
+        super.tearDown()
+    }
+
+    private func makeUserAccount(index: Int) throws -> UserAccount {
+        let credentials = try XCTUnwrap(OAuthCredentials(identifier: "test-user-\(index)", clientId: "fakeClientId", encrypted: true))
+        credentials.userId = "user\(index)"
+        credentials.organizationId = "org\(index)"
+        return UserAccount(credentials: credentials)
+    }
+
+    // MARK: - Remote Registration Tests
+    
+    func testRegisterForRemoteNotifications_Simulator() {
+        // Given
+        pushNotificationManager.isSimulator = true
+        
+        // When
+        pushNotificationManager.registerForRemoteNotifications()
+        
+        // Then - No crash, just logs and returns
+        XCTAssertFalse(mockApplicationHelper.registerForRemoteNotificationsCalled)
+    }
+    
+    func testRegisterForRemoteNotifications_RealDevice() {
+        // Given
+        pushNotificationManager.isSimulator = false
+        
+        // When
+        pushNotificationManager.registerForRemoteNotifications()
+        
+        // Then
+        XCTAssertTrue(mockApplicationHelper.registerForRemoteNotificationsCalled)
+    }
+    
+    func testDidRegisterForRemoteNotificationsWithDeviceToken() {
+        // Given
+        let deviceToken = Data([0x01, 0x02, 0x03, 0x04])
+        
+        // When
+        pushNotificationManager.didRegisterForRemoteNotifications(withDeviceToken: deviceToken)
+        
+        // Then
+        XCTAssertNotNil(pushNotificationManager.deviceToken)
+        XCTAssertEqual(pushNotificationManager.deviceToken, "01020304")
+    }
+    
+    func testRegisterSalesforceNotifications_NoCurrentUser() {
+        // Given
+        UserAccountManager.shared.currentUserAccount = nil
+        
+        // When
+        let result = pushNotificationManager.registerSalesforceNotifications(completionBlock: nil, failBlock: nil)
+        
+        // Then
+        XCTAssertFalse(result)
+    }
+    
+    func testRegisterSalesforceNotifications_NoDeviceToken() {
+        // Given
+        pushNotificationManager.deviceToken = nil
+        
+        // When
+        let result = pushNotificationManager.registerSalesforceNotifications(completionBlock: nil, failBlock: nil)
+        
+        // Then
+        XCTAssertFalse(result)
+    }
+    
+    func testUnregisterSalesforceNotifications_NoCurrentUser() {
+        // Given
+        UserAccountManager.shared.currentUserAccount = nil
+        
+        // When
+        let result = pushNotificationManager.unregisterSalesforceNotifications(completionBlock: nil)
+        
+        // Then
+        XCTAssertFalse(result)
+    }
+    
+    func testUnregisterSalesforceNotifications_NoDeviceSalesforceId() {
+        // Given
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        currentUserPreferences.objects.removeAll()
+
+        // When — user has no deviceSalesforceId in preferences, nothing to unregister
+        let result = pushNotificationManager.unregisterSalesforceNotifications(completionBlock: nil)
+
+        // Then — should be a no-op success
+        XCTAssertTrue(result)
+    }
+    
+    func testUnregisterSalesforceNotifications_Simulator() {
+        // Given
+        pushNotificationManager.isSimulator = true
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        
+        // When
+        let result = pushNotificationManager.unregisterSalesforceNotifications(completionBlock: nil)
+        
+        // Then
+        XCTAssertTrue(result)
+    }
+    
+    // MARK: - Multi-User Unregister Tests
+
+    func test_givenDifferentUser_whenUnregisterSalesforceNotifications_thenUsesPassedUserPreferences() throws {
+        // Given — target user has a different deviceSalesforceId than the current user
+        let targetUser = try makeUserAccount(index: 1)
+        let targetPreferences = MockPreferences()
+        targetPreferences.setObject("target-user-sfid", forKey: PushNotificationConstants.deviceSalesforceId)
+        mockApplicationHelper.preferencesMap[targetUser.accountIdentity] = targetPreferences
+
+        mockRestClient.jsonResponse = """
+        {"success": true}
+        """.data(using: .utf8) ?? Data()
+
+        let expectation = XCTestExpectation(description: "Request sent")
+        mockRestClient.onSend = { request in
+            expectation.fulfill()
+        }
+
+        // When
+        let result = pushNotificationManager.unregisterSalesforceNotifications(for: targetUser, completionBlock: nil)
+
+        // Then
+        XCTAssertTrue(result, "Unregistration should start successfully")
+
+        // Wait for the request
+        wait(for: [expectation], timeout: 2.0)
+
+        // Verify the DELETE path uses the target user's deviceSalesforceId
+        let deleteRequest = try XCTUnwrap(
+            mockRestClient.allRequests.first { $0.method == .DELETE },
+            "Should have made a DELETE request")
+        XCTAssertTrue(deleteRequest.path.contains("target-user-sfid"),
+                      "DELETE path should contain the target user's deviceSalesforceId, not the current user's")
+    }
+
+    func test_givenTargetUserHasNoDeviceId_whenUnregister_thenReturnsSuccessWithoutDelete() throws {
+        // Given — target user has no deviceSalesforceId in preferences
+        let targetUser = try makeUserAccount(index: 2)
+        let targetPreferences = MockPreferences()
+        mockApplicationHelper.preferencesMap[targetUser.accountIdentity] = targetPreferences
+
+        var completionCalled = false
+
+        // When
+        let result = pushNotificationManager.unregisterSalesforceNotifications(for: targetUser) {
+            completionCalled = true
+        }
+
+        // Then — should be a no-op success, not a DELETE with wrong user's ID
+        XCTAssertTrue(result, "Should return true (nothing to unregister)")
+        XCTAssertTrue(completionCalled, "Completion should be called")
+        let deleteRequest = mockRestClient.allRequests.first { $0.method == .DELETE }
+        XCTAssertNil(deleteRequest, "Should NOT make a DELETE request when target user has no deviceSalesforceId")
+    }
+
+    // MARK: - Multi-User Register Tests
+
+    func test_givenDifferentUser_whenRegisterSalesforceNotifications_thenWritesToPassedUserPreferences() throws {
+        // Given — target user has separate preferences from the current user
+        let targetUser = try makeUserAccount(index: 3)
+        let targetPreferences = MockPreferences()
+        mockApplicationHelper.preferencesMap[targetUser.accountIdentity] = targetPreferences
+
+        pushNotificationManager.deviceToken = "fake-apns-token"
+
+        // Mock a successful registration response with a deviceSalesforceId
+        mockRestClient.jsonResponse = """
+        {"id": "0pcRM00000004C7YAI", "success": true}
+        """.data(using: .utf8) ?? Data()
+
+        let expectation = XCTestExpectation(description: "Registration completion")
+
+        // When
+        let result = pushNotificationManager.registerSalesforceNotifications(for: targetUser, completionBlock: {
+            expectation.fulfill()
+        }, failBlock: nil)
+
+        // Then
+        XCTAssertTrue(result, "Registration should start successfully")
+        wait(for: [expectation], timeout: 2.0)
+
+        // Verify deviceSalesforceId was written to the TARGET user's preferences, not current user's
+        XCTAssertEqual(targetPreferences.objects[PushNotificationConstants.deviceSalesforceId] as? String,
+                       "0pcRM00000004C7YAI",
+                       "Should write deviceSalesforceId to the passed user's preferences")
+        XCTAssertEqual(currentUserPreferences.objects[PushNotificationConstants.deviceSalesforceId] as? String,
+                       "current-user-sfid",
+                       "Should NOT overwrite the current user's deviceSalesforceId")
+    }
+
+    // MARK: - Modern Swift API Tests
+
+    func testRegisterForSalesforceNotifications_Success() {
+        // Given
+        let expectation = XCTestExpectation(description: "Registration POST sent")
+        pushNotificationManager.deviceToken = "test-token"
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        mockRestClient.jsonResponse = """
+        {
+            "success": true,
+            "id": "test-sf-id"
+        }
+        """.data(using: .utf8)!
+
+        let expectedPath = "/\(mockRestClient.apiVersion)/sobjects/MobilePushServiceDevice"
+        mockRestClient.onSend = { request in
+            if request.path == expectedPath && request.method == .POST {
+                expectation.fulfill()
+            }
+        }
+
+        // When
+        pushNotificationManager.registerForSalesforceNotifications { _ in }
+
+        // Then
+        wait(for: [expectation], timeout: 5.0)
+        let registrationRequest = mockRestClient.allRequests.first {
+            $0.path == expectedPath && $0.method == .POST
+        }
+        XCTAssertNotNil(registrationRequest, "Should have made a registration POST request")
+    }
+    
+    func testRegisterForSalesforceNotifications_NoCurrentUser() {
+        // Given
+        let expectation = XCTestExpectation(description: "Registration completion")
+        UserAccountManager.shared.currentUserAccount = nil
+        
+        // When
+        pushNotificationManager.registerForSalesforceNotifications { result in
+            // Then
+            switch result {
+            case .success:
+                XCTFail("Should fail")
+            case .failure(let error):
+                XCTAssertEqual(error, .currentUserNotDetected)
+            }
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 1.0)
+    }
+    
+    func testUnregisterForSalesforceNotifications_Success() {
+        // Given
+        let expectation = XCTestExpectation(description: "Unregistration completion")
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        
+        // Set up mock REST client to succeed
+        mockRestClient.jsonResponse = """
+        {
+            "success": true
+        }
+        """.data(using: .utf8)!
+        
+        // When
+        pushNotificationManager.unregisterForSalesforceNotifications { success in
+            // Then
+            XCTAssertTrue(success)
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 1.0)
+    }
+    
+    func testUnregisterForSalesforceNotifications_NoPreferences() {
+        // Given
+        let expectation = XCTestExpectation(description: "Unregistration completion")
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        currentUserPreferences.objects.removeAll()
+
+        // When — user has no deviceSalesforceId in preferences, so nothing to unregister
+        pushNotificationManager.unregisterForSalesforceNotifications { success in
+            // Then — should succeed (no-op: nothing to unregister)
+            XCTAssertTrue(success)
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+    
+    func testUnregisterForSalesforceNotifications_NoDeviceId() {
+        // Given
+        let expectation = XCTestExpectation(description: "Unregistration completion")
+        pushNotificationManager.isSimulator = false
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        currentUserPreferences.objects.removeValue(forKey: PushNotificationConstants.deviceSalesforceId)
+
+        // When — no deviceSalesforceId in preferences means nothing to unregister
+        pushNotificationManager.unregisterForSalesforceNotifications { success in
+            // Then — no-op success
+            XCTAssertTrue(success)
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+    
+    // MARK: - RSA Public Key Tests
+    
+    func testGetRSAPublicKey() {
+        // When
+        let publicKey = pushNotificationManager.getRSAPublicKey()
+        
+        // Then
+        XCTAssertNotNil(publicKey)
+    }
+    
+    // MARK: - Notification Types Tests
+    
+    func testGetNotificationTypes_Success() {
+        // Given
+        let mockTypes = [NotificationType(type: "test", apiName: "test", label: "Test", actionGroups: [])]
+        currentUserAccount.notificationTypes = mockTypes
+        
+        // When
+        let types = pushNotificationManager.getNotificationTypes(account: currentUserAccount)
+        
+        // Then
+        XCTAssertNotNil(types)
+        XCTAssertEqual(types?.count, 1)
+        XCTAssertEqual(types?.first?.apiName, "test")
+    }
+    
+    func testGetNotificationTypes_NoAccount() {
+        // When
+        let types = pushNotificationManager.getNotificationTypes(account: nil)
+        
+        // Then
+        XCTAssertNil(types)
+    }
+    
+    // MARK: - Action Tests
+    
+    func testGetActionGroups_Success() {
+        // Given
+        let mockNotificationType = NotificationType(type: "test_type", apiName: "test_api_name", label: "Test Label", actionGroups: [
+            ActionGroup(name: "group_1", actions: [])
+        ])
+        currentUserAccount.notificationTypes = [mockNotificationType]
+
+        // When
+        let actionGroups = pushNotificationManager.getActionGroups(notificationTypeApiName: "test_api_name", account: currentUserAccount)
+
+        // Then
+        XCTAssertNotNil(actionGroups)
+        XCTAssertEqual(actionGroups?.count, 1)
+        XCTAssertEqual(actionGroups?.first?.name, "group_1")
+    }
+
+    func testGetActionGroup_Success() {
+        // Given
+        let actionGroup = ActionGroup(name: "group_1", actions: [])
+        let mockNotificationType = NotificationType(type: "test_type", apiName: "test_api_name", label: "Test Label", actionGroups: [actionGroup])
+        currentUserAccount.notificationTypes = [mockNotificationType]
+
+        // When
+        let retrievedActionGroup = pushNotificationManager.getActionGroup(notificationTypeApiName: "test_api_name", actionGroupName: "group_1", account: currentUserAccount)
+
+        // Then
+        XCTAssertNotNil(retrievedActionGroup)
+        XCTAssertEqual(retrievedActionGroup?.name, "group_1")
+    }
+
+    func testGetAction_Failure() {
+        // Given
+        currentUserAccount.notificationTypes = []
+
+        // When
+        let retrievedAction = pushNotificationManager.getAction(notificationTypeApiName: "invalid_api_name", actionIdentifier: "non_existent_action", account: currentUserAccount)
+
+        // Then
+        XCTAssertNil(retrievedAction)
+    }
+
+    // MARK: - Invoke Server Notification Action Tests
+
+    func testInvokeServerNotificationAction_Success() async throws {
+        // Given
+        mockRestClient.apiVersion = "v64.0"
+        mockRestClient.jsonResponse = """
+        {
+            "message": "Action executed successfully"
+        }
+        """.data(using: .utf8)!
+
+        // When
+        let result = try await pushNotificationManager.invokeServerNotificationAction(
+            client: mockRestClient,
+            notificationId: "test_notification",
+            actionIdentifier: "test_action"
+        )
+
+        // Then
+        XCTAssertEqual(result.message, "Action executed successfully")
+    }
+    
+    func testInvokeServerNotificationAction_APITooLow() async {
+        // Given
+        mockRestClient.apiVersion = "v63.0"
+
+        // When/Then: Verify that the call throws the expected error.
+        do {
+            _ = try await pushNotificationManager.invokeServerNotificationAction(
+                client: mockRestClient,
+                notificationId: "test_notification",
+                actionIdentifier: "test_action"
+            )
+            XCTFail("Expected PushNotificationManagerError.notificationActionInvocationFailed error, but no error was thrown.")
+        } catch let error as PushNotificationManagerError {
+            XCTAssertEqual(error, .notificationActionInvocationFailed("API Version must be at least v64.0"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testInvokeServerNotificationAction_Failure() async throws {
+        // Given
+        mockRestClient.apiVersion = "v64.0"
+        mockRestClient.mockError = NSError(domain: "MockRestClient", code: 500, userInfo: [NSLocalizedDescriptionKey: "Server Error"])
+
+        // When
+        do {
+            _ = try await pushNotificationManager.invokeServerNotificationAction(
+                client: mockRestClient,
+                notificationId: "test_notification",
+                actionIdentifier: "test_action"
+            )
+        } catch {
+            // Then
+            XCTAssertNotNil(error)
+            return
+        }
+
+        XCTFail("Expected an error but succeeded")
+    }
+    
+    // MARK: - Helper Function
+    private func makeMockJSONResponse() -> Data {
+        let json = """
+        {
+          "notificationTypes": [
+            {
+              "actionGroups": [
+                {
+                  "actions": [
+                    {
+                      "actionKey": "new_acc_and_opp__new_account",
+                      "label": "New Account",
+                      "name": "new_account",
+                      "type": "NotificationApiAction"
+                    },
+                    {
+                      "actionKey": "new_acc_and_opp__new_opportunity",
+                      "label": "New Opportunity",
+                      "name": "new_opportunity",
+                      "type": "NotificationApiAction"
+                    }
+                  ],
+                  "name": "new_acc_and_opp"
+                },
+                {
+                  "actions": [
+                    {
+                      "actionKey": "updateCase__escalate",
+                      "label": "Escalate",
+                      "name": "escalate",
+                      "type": "NotificationApiAction"
+                    },
+                    {
+                      "actionKey": "updateCase__raise_priority",
+                      "label": "Raise Priority",
+                      "name": "raise_priority",
+                      "type": "NotificationApiAction"
+                    }
+                  ],
+                  "name": "updateCase"
+                }
+              ],
+              "apiName": "actionable_notif_test_type",
+              "label": "Actionable Notification Test Type",
+              "type": "actionable_notif_test_type"
+            },
+            {
+              "apiName": "approval_request",
+              "label": "Approval requests",
+              "type": "approval_request"
+            },
+            {
+              "apiName": "chatter_comment_on_post",
+              "label": "New comments on a post",
+              "type": "chatter_comment_on_post"
+            },
+            {
+              "apiName": "chatter_group_mention",
+              "label": "Group mentions on a post",
+              "type": "chatter_group_mention"
+            },
+            {
+              "apiName": "chatter_mention",
+              "label": "Individual mentions on a post",
+              "type": "chatter_mention"
+            },
+            {
+              "apiName": "group_announce",
+              "label": "Group manager announcements",
+              "type": "group_announce"
+            },
+            {
+              "apiName": "group_post",
+              "label": "Posts to a group",
+              "type": "group_post"
+            },
+            {
+              "apiName": "personal_analytic",
+              "label": "Salesforce Classic report updates",
+              "type": "personal_analytic"
+            },
+            {
+              "apiName": "profile_post",
+              "label": "Posts to a profile",
+              "type": "profile_post"
+            },
+            {
+              "apiName": "stream_post",
+              "label": "Posts to a stream",
+              "type": "stream_post"
+            },
+            {
+              "apiName": "task_delegated_to",
+              "label": "Task assignments",
+              "type": "task_delegated_to"
+            }
+          ]
+        }
+        """
+        return json.data(using: .utf8)!
+    }
+
+    // MARK: - Error Tests
+    
+    func testPushNotificationManagerError_Equatable_SameCases() {
+        // Test same cases without associated values
+        XCTAssertEqual(PushNotificationManagerError.registrationFailed, PushNotificationManagerError.registrationFailed)
+        XCTAssertEqual(PushNotificationManagerError.currentUserNotDetected, PushNotificationManagerError.currentUserNotDetected)
+        XCTAssertEqual(PushNotificationManagerError.failedNotificationTypesRetrieval, PushNotificationManagerError.failedNotificationTypesRetrieval)
+        
+        // Test same cases with same associated values
+        let error1 = PushNotificationManagerError.notificationActionInvocationFailed("test error")
+        let error2 = PushNotificationManagerError.notificationActionInvocationFailed("test error")
+        XCTAssertEqual(error1, error2)
+    }
+    
+    func testPushNotificationManagerError_Equatable_DifferentCases() {
+        // Test different cases without associated values
+        XCTAssertNotEqual(PushNotificationManagerError.registrationFailed, PushNotificationManagerError.currentUserNotDetected)
+        XCTAssertNotEqual(PushNotificationManagerError.registrationFailed, PushNotificationManagerError.failedNotificationTypesRetrieval)
+        XCTAssertNotEqual(PushNotificationManagerError.currentUserNotDetected, PushNotificationManagerError.failedNotificationTypesRetrieval)
+        
+        // Test same case with different associated values
+        let error1 = PushNotificationManagerError.notificationActionInvocationFailed("error 1")
+        let error2 = PushNotificationManagerError.notificationActionInvocationFailed("error 2")
+        XCTAssertNotEqual(error1, error2)
+        
+        // Test different cases with and without associated values
+        XCTAssertNotEqual(PushNotificationManagerError.registrationFailed, PushNotificationManagerError.notificationActionInvocationFailed("test"))
+        XCTAssertNotEqual(PushNotificationManagerError.currentUserNotDetected, PushNotificationManagerError.notificationActionInvocationFailed("test"))
+        XCTAssertNotEqual(PushNotificationManagerError.failedNotificationTypesRetrieval, PushNotificationManagerError.notificationActionInvocationFailed("test"))
+    }
+    
+    func testPushNotificationManagerError_Equatable_EmptyString() {
+        // Test with empty string
+        let error1 = PushNotificationManagerError.notificationActionInvocationFailed("")
+        let error2 = PushNotificationManagerError.notificationActionInvocationFailed("")
+        XCTAssertEqual(error1, error2)
+        
+        // Test empty string vs non-empty string
+        let error3 = PushNotificationManagerError.notificationActionInvocationFailed("not empty")
+        XCTAssertNotEqual(error1, error3)
+    }
+
+    // MARK: - Foreground Registration Mode Tests
+
+    func test_givenModeNone_whenAppEntersForeground_thenNoRegistrationOccurs() {
+        // Given
+        pushNotificationManager.deviceToken = "test-device-token"
+        pushNotificationManager.foregroundRegistrationMode = .none
+        let initialCallCount = mockRestClient.sendCallCount
+
+        let unexpectedSend = XCTestExpectation(description: "send should not be called")
+        unexpectedSend.isInverted = true
+        mockRestClient.onSend = { _ in
+            unexpectedSend.fulfill()
+        }
+
+        // When
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+
+        // Then — wait briefly to confirm no call occurs
+        wait(for: [unexpectedSend], timeout: 0.5)
+        XCTAssertEqual(mockRestClient.sendCallCount, initialCallCount,
+                       "REST client should not be called when mode is .none")
+    }
+
+    func test_givenModeCurrentUser_whenAppEntersForeground_thenOnlyCurrentUserIsRegistered() {
+        // Given
+        pushNotificationManager.deviceToken = "test-device-token"
+        pushNotificationManager.foregroundRegistrationMode = .currentUser
+        // .utf8 encoding of a string literal never returns nil; Data() is an unreachable fallback to avoid force unwrap.
+        mockRestClient.jsonResponse = """
+        {"success": true, "id": "test-sf-id"}
+        """.data(using: .utf8) ?? Data()
+
+        let initialCallCount = mockRestClient.sendCallCount
+        let expectation = XCTestExpectation(description: "Current user registration triggered")
+        mockRestClient.onSend = { _ in
+            expectation.fulfill()
+        }
+
+        // When
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+
+        // Then
+        wait(for: [expectation], timeout: 2.0)
+        let registrationRequests = mockRestClient.allRequests.filter {
+            $0.path == "/\(self.mockRestClient.apiVersion)/sobjects/MobilePushServiceDevice"
+                && $0.method == .POST
+        }
+        let newRegistrationCount = registrationRequests.count - initialCallCount
+        XCTAssertEqual(newRegistrationCount, 1,
+                       "Should register exactly once (current user only)")
+    }
+
+    func test_givenModeAllUsers_whenAppEntersForeground_thenAllUsersAreRegistered() {
+        // Given
+        pushNotificationManager.deviceToken = "test-device-token"
+        pushNotificationManager.foregroundRegistrationMode = .allUsers
+        // .utf8 encoding of a string literal never returns nil; Data() is an unreachable fallback to avoid force unwrap.
+        mockRestClient.jsonResponse = """
+        {"success": true, "id": "test-sf-id"}
+        """.data(using: .utf8) ?? Data()
+
+        // We test with the single mock user since UserAccountManager can't easily be injected here.
+        // The key assertion is that the .allUsers code path fires at all; multi-user coverage
+        // is validated by the .currentUser test (which confirms exactly 1 call for 1 user).
+        let initialCallCount = mockRestClient.sendCallCount
+        let expectation = XCTestExpectation(description: "All users registered")
+        mockRestClient.onSend = { _ in
+            expectation.fulfill()
+        }
+
+        // When
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+
+        // Then
+        wait(for: [expectation], timeout: 2.0)
+        XCTAssertGreaterThan(mockRestClient.sendCallCount, initialCallCount,
+                             "REST client should be called at least once for .allUsers mode")
+    }
+
+    func test_givenModeAllUsers_whenNoDeviceToken_thenNoRegistrationOccurs() {
+        // Given
+        pushNotificationManager.deviceToken = nil
+        pushNotificationManager.foregroundRegistrationMode = .allUsers
+        let initialCallCount = mockRestClient.sendCallCount
+
+        let unexpectedSend = XCTestExpectation(description: "send should not be called")
+        unexpectedSend.isInverted = true
+        mockRestClient.onSend = { _ in
+            unexpectedSend.fulfill()
+        }
+
+        // When
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+
+        // Then — wait briefly to confirm no call occurs
+        wait(for: [unexpectedSend], timeout: 0.5)
+        XCTAssertEqual(mockRestClient.sendCallCount, initialCallCount,
+                       "REST client should not be called without a device token")
+    }
+
+    func test_givenDeprecatedRegisterOnForegroundFalse_thenModeIsNone() {
+        // Given / When
+        pushNotificationManager.registerOnForeground = false
+        // Then
+        XCTAssertEqual(pushNotificationManager.foregroundRegistrationMode, .none,
+                       "Setting registerOnForeground=false should set foregroundRegistrationMode to .none")
+        XCTAssertFalse(pushNotificationManager.registerOnForeground,
+                       "registerOnForeground getter should return false when mode is .none")
+    }
+
+    func test_givenDeprecatedRegisterOnForegroundTrue_thenModeIsAllUsers() {
+        // Given - start from .none so the setter is meaningfully exercised
+        pushNotificationManager.foregroundRegistrationMode = .none
+        // When
+        pushNotificationManager.registerOnForeground = true
+        // Then
+        XCTAssertEqual(pushNotificationManager.foregroundRegistrationMode, .allUsers,
+                       "Setting registerOnForeground=true should set foregroundRegistrationMode to .allUsers")
+        XCTAssertTrue(pushNotificationManager.registerOnForeground,
+                      "registerOnForeground getter should return true when mode is .allUsers")
+    }
+
+    // MARK: - Refresh Token Migration Tests
+
+    func testOnUserMigratedRefreshToken_WithDeviceToken_TriggersRegistration() {
+        // Given
+        pushNotificationManager.deviceToken = "test-device-token"
+        UserAccountManager.shared.currentUserAccount = currentUserAccount
+        mockRestClient.jsonResponse = """
+        {
+            "success": true,
+            "id": "test-sf-id"
+        }
+        """.data(using: .utf8)!
+
+        let expectedPath = "/\(mockRestClient.apiVersion)/sobjects/MobilePushServiceDevice"
+        let expectation = XCTestExpectation(description: "Registration POST sent")
+        mockRestClient.onSend = { request in
+            if request.path == expectedPath && request.method == .POST {
+                expectation.fulfill()
+            }
+        }
+
+        // When
+        NotificationCenter.default.post(
+            name: UserAccountManager.didMigrateRefreshToken,
+            object: nil
+        )
+
+        // Then
+        wait(for: [expectation], timeout: 5.0)
+        let registrationRequest = mockRestClient.allRequests.first {
+            $0.path == expectedPath && $0.method == .POST
+        }
+        XCTAssertNotNil(registrationRequest, "Should have made a registration POST request")
+        XCTAssertEqual(registrationRequest?.method, .POST, "Should be a POST request")
+    }
+
+    func testMigrateRefreshTokenObserver_ProperlyRemoved_OnDeinit() {
+        // Given - Create a manager instance with a weak reference
+        var manager: PushNotificationManager? = PushNotificationManager(notificationRegister: mockApplicationHelper)
+        manager?.deviceToken = "test-token"
+        weak var weakManager: PushNotificationManager? = manager
+
+        // Verify manager exists
+        XCTAssertNotNil(weakManager, "Manager should exist initially")
+
+        // When - Release the strong reference
+        manager = nil
+
+        // Then - Verify manager was deallocated (no retain cycle from observer)
+        XCTAssertNil(weakManager, "PushNotificationManager should be deallocated, indicating observer doesn't create retain cycle")
+
+        // Also verify posting notification after dealloc doesn't crash
+        NotificationCenter.default.post(
+            name: UserAccountManager.didMigrateRefreshToken,
+            object: nil
+        )
+        // If we get here without crashing, the weak reference in the observer worked correctly
+    }
+
+    // MARK: - Fetch and Store Notification Types Tests
+
+    func testFetchAndStoreNotificationTypes_Success() async throws {
+        // Given
+        mockRestClient.apiVersion = "v64.0"
+        mockRestClient.jsonResponse = makeMockJSONResponse()
+        
+        // When
+        try await pushNotificationManager.fetchAndStoreNotificationTypes(restClient: mockRestClient)
+        
+        // ** Archive and unarchive the user account to test NSSecureCoding **//
+        let data = try NSKeyedArchiver.archivedData(withRootObject: currentUserAccount!, requiringSecureCoding: true)
+        let unarchivedAccount = try NSKeyedUnarchiver.unarchivedObject(ofClass: UserAccount.self, from: data)
+  
+        // Then
+        XCTAssertNotNil(currentUserAccount.notificationTypes)
+        XCTAssertEqual(currentUserAccount.notificationTypes?.count, 11)
+        
+       
+        // ** Assert notificationTypes are preserved ** //
+        XCTAssertNotNil(unarchivedAccount?.notificationTypes)
+        XCTAssertEqual(unarchivedAccount?.notificationTypes?.count, currentUserAccount.notificationTypes?.count)
+        XCTAssertEqual(unarchivedAccount?.notificationTypes?.first?.apiName, currentUserAccount.notificationTypes?.first?.apiName)
+    }
+    
+    func testFetchAndStoreNotificationTypes_NoAccount() async {
+        // Given
+        UserAccountManager.shared.currentUserAccount = nil
+        
+        // When/Then
+        do {
+            try await pushNotificationManager.fetchAndStoreNotificationTypes(restClient: mockRestClient)
+            XCTFail("Expected currentUserNotDetected error")
+        } catch let error as PushNotificationManagerError {
+            XCTAssertEqual(error, .currentUserNotDetected)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+    
+    func testFetchAndStoreNotificationTypes_APITooLow() async {
+        // Given
+        mockRestClient.apiVersion = "v63.0"
+        
+        // When/Then
+        do {
+            try await pushNotificationManager.fetchAndStoreNotificationTypes(restClient: mockRestClient)
+            XCTFail("Expected notificationActionInvocationFailed error")
+        } catch let error as PushNotificationManagerError {
+            XCTAssertEqual(error, .failedNotificationTypesRetrieval)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+    
+    func testFetchAndStoreNotificationTypes_ServerErrorWithCache() async throws {
+        // Given
+        mockRestClient.apiVersion = "v64.0"
+        mockRestClient.mockError = NSError(domain: "MockRestClient", code: 500, userInfo: [NSLocalizedDescriptionKey: "Server Error"])
+        
+        // Set up cached types
+        let cachedTypes = [
+            NotificationType(type: "cached_type", apiName: "cached_type", label: "Cached Type", actionGroups: [])
+        ]
+        currentUserAccount.notificationTypes = cachedTypes
+        
+        // When
+        try await pushNotificationManager.fetchAndStoreNotificationTypes(restClient: mockRestClient)
+        
+        // Then
+        XCTAssertNotNil(currentUserAccount.notificationTypes)
+        XCTAssertEqual(currentUserAccount.notificationTypes?.count, 1)
+        XCTAssertEqual(currentUserAccount.notificationTypes?.first?.apiName, "cached_type")
+    }
+    
+    func testFetchAndStoreNotificationTypes_ServerErrorNoCache() async {
+        // Given
+        mockRestClient.apiVersion = "v64.0"
+        mockRestClient.mockError = NSError(domain: "MockRestClient", code: 500, userInfo: [NSLocalizedDescriptionKey: "Server Error"])
+        currentUserAccount.notificationTypes = nil
+        
+        // When/Then
+        do {
+            try await pushNotificationManager.fetchAndStoreNotificationTypes(restClient: mockRestClient)
+            XCTFail("Expected failedNotificationTypesRetrieval error")
+        } catch let error as PushNotificationManagerError {
+            XCTAssertEqual(error, .failedNotificationTypesRetrieval)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+    
+    func testFetchAndStoreNotificationTypes_InvalidResponseWithCache() async throws {
+        // Given
+        mockRestClient.apiVersion = "v64.0"
+        mockRestClient.jsonResponse = "invalid json".data(using: .utf8)!
+        
+        // Set up cached types
+        let cachedTypes = [
+            NotificationType(type: "cached_type", apiName: "cached_type", label: "Cached Type", actionGroups: [])
+        ]
+        currentUserAccount.notificationTypes = cachedTypes
+        
+        // When
+        try await pushNotificationManager.fetchAndStoreNotificationTypes(restClient: mockRestClient)
+        
+        // Then
+        XCTAssertNotNil(currentUserAccount.notificationTypes)
+        XCTAssertEqual(currentUserAccount.notificationTypes?.count, 1)
+        XCTAssertEqual(currentUserAccount.notificationTypes?.first?.apiName, "cached_type")
+    }
+
+    func testSetNotificationCategories_WithFilter() {
+        // Given
+        let mockTypes = [
+            NotificationType(type: "supported_type", apiName: "supported_type", label: "Supported Type", actionGroups: [
+                ActionGroup(name: "group1", actions: [
+                    Action(name: "action1", identifier: "group1__action1", label: "Action 1", type: "NotificationApiAction")
+                ])
+            ]),
+            NotificationType(type: "unsupported_type", apiName: "unsupported_type", label: "Unsupported Type", actionGroups: [
+                ActionGroup(name: "group2", actions: [
+                    Action(name: "action2", identifier: "group2__action2", label: "Action 2", type: "NotificationApiAction")
+                ])
+            ])
+        ]
+        
+        // When
+        UserAccountManager.shared.filterSupportedNotificationTypes = { types in
+            return types.filter { $0.apiName == "supported_type" }
+        }
+        pushNotificationManager.setNotificationCategories(types: mockTypes)
+        
+        // Then
+        let expectation = XCTestExpectation(description: "Get notification categories")
+        UNUserNotificationCenter.current().getNotificationCategories { categories in
+            XCTAssertEqual(categories.count, 1, "Should only register one category")
+            
+            let category = categories.first
+            XCTAssertEqual(category?.identifier, "group1", "Category identifier should match the supported type's group")
+            XCTAssertEqual(category?.actions.count, 1, "Should have one action")
+            
+            let action = category?.actions.first
+            XCTAssertEqual(action?.identifier, "group1__action1", "Action identifier should match")
+            XCTAssertEqual(action?.title, "Action 1", "Action title should match")
+            
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testSetNotificationCategories_NoFilter() {
+        // Given
+        let mockTypes = [
+            NotificationType(type: "type1", apiName: "type1", label: "Type 1", actionGroups: [
+                ActionGroup(name: "group1", actions: [
+                    Action(name: "action1", identifier: "group1__action1", label: "Action 1", type: "NotificationApiAction")
+                ])
+            ]),
+            NotificationType(type: "type2", apiName: "type2", label: "Type 2", actionGroups: [
+                ActionGroup(name: "group2", actions: [
+                    Action(name: "action2", identifier: "group2__action2", label: "Action 2", type: "NotificationApiAction")
+                ])
+            ])
+        ]
+        
+        // When
+        UserAccountManager.shared.filterSupportedNotificationTypes = nil
+        pushNotificationManager.setNotificationCategories(types: mockTypes)
+        
+        // Then
+        let expectation = XCTestExpectation(description: "Get notification categories")
+        UNUserNotificationCenter.current().getNotificationCategories { categories in
+            XCTAssertEqual(categories.count, 2, "Should register both categories")
+            
+            let category1 = categories.first { $0.identifier == "group1" }
+            XCTAssertNotNil(category1, "Should have category for type1")
+            XCTAssertEqual(category1?.actions.count, 1, "Should have one action for type1")
+            let action1 = category1?.actions.first
+            XCTAssertEqual(action1?.identifier, "group1__action1", "Action identifier should match")
+            XCTAssertEqual(action1?.title, "Action 1", "Action title should match")
+            
+            let category2 = categories.first { $0.identifier == "group2" }
+            XCTAssertNotNil(category2, "Should have category for type2")
+            XCTAssertEqual(category2?.actions.count, 1, "Should have one action for type2")
+            let action2 = category2?.actions.first
+            XCTAssertEqual(action2?.identifier, "group2__action2", "Action identifier should match")
+            XCTAssertEqual(action2?.title, "Action 2", "Action title should match")
+            
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testSetNotificationCategories_WithActionFilter() {
+        // Given
+        let mockTypes = [
+            NotificationType(type: "approval_type", apiName: "approval_type", label: "Approval Type", actionGroups: [
+                ActionGroup(name: "approval_actions", actions: [
+                    Action(name: "approve", identifier: "approval_actions__approve", label: "Approve", type: "approve_type"),
+                    Action(name: "deny", identifier: "approval_actions__deny", label: "Deny", type: "deny_type"),
+                    Action(name: "delegate", identifier: "approval_actions__delegate", label: "Delegate", type: "delegate_type")
+                ])
+            ])
+        ]
+        
+        // When
+        UserAccountManager.shared.filterSupportedNotificationTypes = { types in
+            return types.map { type in
+                // Use the helper method to filter actions
+                return type.filteredCopy(keepingActions: ["approve_type", "deny_type"])
+            }
+        }
+        pushNotificationManager.setNotificationCategories(types: mockTypes)
+        
+        // Then
+        let expectation = XCTestExpectation(description: "Get notification categories")
+        UNUserNotificationCenter.current().getNotificationCategories { categories in
+
+            XCTAssertEqual(categories.count, 1, "Should register one category")
+            
+            let category = categories.first
+            XCTAssertEqual(category?.identifier, "approval_actions", "Category identifier should match")
+            XCTAssertEqual(category?.actions.count, 2, "Should have only approve and deny actions")
+            
+            let approveAction = category?.actions.first { $0.identifier == "approval_actions__approve" }
+            XCTAssertNotNil(approveAction, "Should have approve action")
+            XCTAssertEqual(approveAction?.title, "Approve", "Action title should match")
+            
+            let denyAction = category?.actions.first { $0.identifier == "approval_actions__deny" }
+            XCTAssertNotNil(denyAction, "Should have deny action")
+            XCTAssertEqual(denyAction?.title, "Deny", "Action title should match")
+            
+            let delegateAction = category?.actions.first { $0.identifier == "approval_actions__delegate" }
+            XCTAssertNil(delegateAction, "Should not have delegate action")
+            
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testNotificationTypeFilteredCopy() {
+        // Given
+        let originalType = NotificationType(type: "test_type", apiName: "test_type", label: "Test Type", actionGroups: [
+            ActionGroup(name: "test_group", actions: [
+                Action(name: "action1", identifier: "test_group__action1", label: "Action 1", type: "action1_type"),
+                Action(name: "action2", identifier: "test_group__action2", label: "Action 2", type: "action2_type"),
+                Action(name: "action3", identifier: "test_group__action3", label: "Action 3", type: "action3_type")
+            ])
+        ])
+        
+        // When
+        let filteredType = originalType.filteredCopy(keepingActions: ["action1_type", "action3_type"])
+        
+        // Then
+        XCTAssertEqual(filteredType.type, originalType.type, "Type should be preserved")
+        XCTAssertEqual(filteredType.apiName, originalType.apiName, "API name should be preserved")
+        XCTAssertEqual(filteredType.label, originalType.label, "Label should be preserved")
+        
+        // Verify action groups
+        XCTAssertEqual(filteredType.actionGroups?.count, 1, "Should have one action group")
+        let filteredGroup = filteredType.actionGroups?.first
+        XCTAssertEqual(filteredGroup?.name, "test_group", "Group name should be preserved")
+        
+        // Verify actions
+        XCTAssertEqual(filteredGroup?.actions.count, 2, "Should have two actions")
+        let actionNames = filteredGroup?.actions.map { $0.name }
+        XCTAssertEqual(actionNames, ["action1", "action3"], "Should only keep specified actions")
+    }
+}
+
+class NotificationCategoryFactoryTests: XCTestCase {
+    var factory: NotificationCategoryFactory!
+    
+    override func setUp() {
+        super.setUp()
+        factory = NotificationCategoryFactory.shared
+    }
+    
+    override func tearDown() {
+        factory = nil
+        super.tearDown()
+    }
+    
+    func testCreateCategories_WithActualJSON() throws {
+        // Given
+        let json = """
+        {
+            "notificationTypes": [
+                {
+                    "type": "chatter_mention",
+                    "apiName": "chatter_mention",
+                    "label": "Chatter Mention",
+                    "actionGroups": []
+                },
+                {
+                    "type": "approval_notification",
+                    "apiName": "approval_notification",
+                    "label": "Approval Notification",
+                    "actionGroups": [
+                        {
+                            "name": "approval_req",
+                            "actions": [
+                                {
+                                    "name": "approve",
+                                    "actionKey": "approval_req__approve",
+                                    "label": "Approve",
+                                    "type": "NotificationApiAction"
+                                },
+                                {
+                                    "name": "deny",
+                                    "actionKey": "approval_req__deny",
+                                    "label": "Deny",
+                                    "type": "NotificationApiAction"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        """
+        let jsonData = json.data(using: .utf8)!
+        let response = try JSONDecoder().decode(NotificationTypesResponse.self, from: jsonData)
+        
+        // When
+        let categories = factory.createCategories(from: response.notificationTypes)
+        
+        // Then
+        XCTAssertEqual(categories.count, 1, "Should only create categories for notification types with action groups")
+        
+        // Verify approval_notification category
+        let approvalCategory = categories.first { $0.identifier == "approval_req" }
+        XCTAssertNotNil(approvalCategory, "Should create category for approval_notification")
+        XCTAssertEqual(approvalCategory?.actions.count, 2, "Should create both approve and deny actions")
+        
+        // Verify approve action
+        let approveAction = approvalCategory?.actions.first { $0.identifier == "approval_req__approve" }
+        XCTAssertNotNil(approveAction, "Should create approve action")
+        XCTAssertEqual(approveAction?.title, "Approve")
+        guard let options = approveAction?.options else {
+            XCTFail("Should have options")
+            return
+        }
+        XCTAssertTrue(options.contains(.authenticationRequired))
+        XCTAssertFalse(options.contains(.foreground))
+        
+        // Verify deny action
+        let denyAction = approvalCategory?.actions.first { $0.identifier == "approval_req__deny" }
+        XCTAssertNotNil(denyAction, "Should create deny action")
+        XCTAssertEqual(denyAction?.title, "Deny")
+        guard let options = denyAction?.options else {
+            XCTFail("Should have options")
+            return
+        }
+        XCTAssertTrue(options.contains(.authenticationRequired))
+        XCTAssertFalse(options.contains(.foreground))
+    }
+    
+    func testCreateCategories_WithNonApiAction() throws {
+        // Given
+        let json = """
+        {
+            "notificationTypes": [
+                {
+                    "type": "chatter_mention",
+                    "apiName": "chatter_mention",
+                    "label": "Chatter Mention",
+                    "actionGroups": []
+                },
+                {
+                    "type": "custom_notification",
+                    "apiName": "custom_notification",
+                    "label": "Custom Notification",
+                    "actionGroups": [
+                        {
+                            "name": "custom_actions",
+                            "actions": [
+                                {
+                                    "name": "view",
+                                    "actionKey": "custom_actions__view",
+                                    "label": "View Details",
+                                    "type": "foreground"
+                                },
+                                {
+                                    "name": "dismiss",
+                                    "actionKey": "custom_actions__dismiss",
+                                    "label": "Dismiss",
+                                    "type": "dismiss"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        """
+        let jsonData = json.data(using: .utf8)!
+        let response = try JSONDecoder().decode(NotificationTypesResponse.self, from: jsonData)
+        
+        // When
+        let categories = factory.createCategories(from: response.notificationTypes)
+        
+        // Then
+        XCTAssertEqual(categories.count, 1, "Should only create categories for notification types with action groups")
+        
+        // Verify custom_notification category
+        let customCategory = categories.first { $0.identifier == "custom_actions" }
+        XCTAssertNotNil(customCategory, "Should create category for custom_notification")
+        XCTAssertEqual(customCategory?.actions.count, 2, "Should create both view and dismiss actions")
+        
+        // Verify view action
+        let viewAction = customCategory?.actions.first { $0.identifier == "custom_actions__view" }
+        XCTAssertNotNil(viewAction, "Should create view action")
+        XCTAssertEqual(viewAction?.title, "View Details")
+        guard let options = viewAction?.options else {
+            XCTFail("Should have options")
+            return
+        }
+        XCTAssertTrue(options.contains(.foreground))
+        XCTAssertFalse(options.contains(.authenticationRequired))
+        
+        // Verify dismiss action
+        let dismissAction = customCategory?.actions.first { $0.identifier == "custom_actions__dismiss" }
+        XCTAssertNotNil(dismissAction, "Should create dismiss action")
+        XCTAssertEqual(dismissAction?.title, "Dismiss")
+        guard let options = dismissAction?.options else {
+            XCTFail("Should have options")
+            return
+        }
+        XCTAssertTrue(options.contains(.foreground))
+        XCTAssertFalse(options.contains(.authenticationRequired))
+    }
+}
+
+// MARK: - Mocks
+class MockApplicationHelper: RemoteNotificationRegistering {
+    var client: RestClient?
+    var preferencesMap: [UserAccountIdentity: SFPreferences] = [:]
+    var registerForRemoteNotificationsCalled = false
+
+    func client(for user: UserAccount?) -> RestClient? {
+        client
+    }
+
+    func preferences(for user: UserAccount?) -> SFPreferences? {
+        if let user = user {
+            return preferencesMap[user.accountIdentity] ?? MockPreferences()
+        }
+        return MockPreferences()
+    }
+
+    func registerForRemoteNotifications() {
+        registerForRemoteNotificationsCalled = true
+    }
+}
+
+class MockPreferences: SFPreferences {
+    var objects: [String: Any] = [:]
+    override func string(forKey key: String) -> String? {
+        return objects[key] as? String
+    }
+    
+    override func setObject(_ object: Any, forKey key: String) {
+        objects[key] = object
+    }
+}

@@ -5,9 +5,13 @@ project.xcworkspace
 artifacts
 node_modules
 shared/test/test_credentials.json
+shared/test/ui_test_config.json
+bootconfig.plist
 /SalesforceMobileSDK.xcworkspace/xcshareddata/SalesforceMobileSDK.xccheckout
 /SalesforceMobileSDK.xcworkspace/xcshareddata/SalesforceMobileSDK.xcscmblueprint
 /SalesforceMobileSDK.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+/SalesforceMobileSDK.xcworkspace/xcshareddata/swiftpm/
+/SalesforceMobileSDK.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 /hybrid/SampleApps/ContactExplorer/build/
 /hybrid/SampleApps/VFConnector/build/
 /libs/SalesforceHybridSDK/build/
@@ -16,9 +20,9 @@ shared/test/test_credentials.json
 /libs/SalesforceAnalytics/build/
 /libs/SmartStore/build/
 /libs/MobileSync/build/
+/libs/SalesforceSDKCommon/build/
 /native/SampleApps/RestAPIExplorer/build/
 node_modules/
-.github/
 .idea/
 package-lock.json
 npm-debug.log
@@ -27,3 +31,4 @@ clangReport/
 test_output/
 .circleci/fastlane/README.md
 .circleci/fastlane/report.xml
+.build

@@ -48,18 +48,48 @@
 #define __SALESFORCE_SDK_7_0_0 70000
 #define __SALESFORCE_SDK_7_1_0 70100
 #define __SALESFORCE_SDK_7_2_0 70200
-
 #define __SALESFORCE_SDK_7_1_2 70102
-
 #define __SALESFORCE_SDK_7_3_0 70300
-
 #define __SALESFORCE_SDK_8_0_0 80000
-
 #define __SALESFORCE_SDK_8_1_0 80100
-
 #define __SALESFORCE_SDK_8_2_0 80200
+#define __SALESFORCE_SDK_8_3_0 80300
+#define __SALESFORCE_SDK_9_0_0 90000
+#define __SALESFORCE_SDK_9_1_0 90100
+#define __SALESFORCE_SDK_9_1_1 90101
+#define __SALESFORCE_SDK_9_2_0 90200
 
-#define SALESFORCE_SDK_VERSION_MIN_REQUIRED __SALESFORCE_SDK_8_2_0
+#define __SALESFORCE_SDK_10_0_0 100000
+
+#define __SALESFORCE_SDK_10_1_0 100100
+
+#define __SALESFORCE_SDK_10_2_0 100200
+
+#define __SALESFORCE_SDK_11_0_0 110000
+
+#define __SALESFORCE_SDK_11_1_0 110100
+
+#define __SALESFORCE_SDK_11_0_1 110001
+
+#define __SALESFORCE_SDK_12_0_0 120000
+
+#define __SALESFORCE_SDK_12_1_0 120100
+
+#define __SALESFORCE_SDK_12_0_1 120001
+
+#define __SALESFORCE_SDK_12_2_0 120200
+
+#define __SALESFORCE_SDK_12_1_1 120101
+
+#define __SALESFORCE_SDK_13_0_0 130000
+
+#define __SALESFORCE_SDK_13_1_0 130100
+
+#define __SALESFORCE_SDK_13_2_0 130200
+
+#define __SALESFORCE_SDK_14_0_0 140000
+
+#define SALESFORCE_SDK_VERSION_MIN_REQUIRED __SALESFORCE_SDK_14_0_0
 
 #define SALESFORCE_SDK_VERSION [NSString stringWithFormat:@"%d.%d.%d%@",              \
                                 (SALESFORCE_SDK_VERSION_MIN_REQUIRED / 10000),        \
@@ -87,58 +117,5 @@ _Pragma("clang diagnostic ignored \"-Wdeprecated-declarations\"")
 
 #define SFSDK_USE_DEPRECATED_END \
 _Pragma("clang diagnostic pop")
-
-
-/*!
- * @function sf_os_signpost_interval_begin
- *
- * @abstract
- * Begins a signpost interval.
- *
- * @param log
- * Log handle previously created with `os_log_create`.
- *
- * @param interval_id
- * An ID for the event. See Signpost IDs.
- *
- * @param name
- * The name of this event. Must be a hard-coded string.
- *
- * @param ... (format + arguments)
- * Additional information to include with this signpost. 
- * Must be a hard-coded string, as required by `os_log` functions.
- */
-#define sf_os_signpost_interval_begin(log, interval_id, name, ...) \
-    os_signpost_emit_with_type(log, OS_SIGNPOST_INTERVAL_BEGIN, interval_id, name, ##__VA_ARGS__);
-
-
-/*!
- * @function sf_os_signpost_interval_end
- *
- * @abstract
- * Ends a signpost interval.
- *
- * @param log
- * Log handle provided to `os_signpost_interval_begin`.
- *
- * @param interval_id
- * Event ID provided to `os_signpost_interval_begin`. See
- * Signpost IDs.
- *
- * @param name
- * Event name provided to 'os_signost_interval_begin'. Must be a
- * hard-coded string.
- *
- * @param ... (format + arguments)
- * Additional information to include with this signpost. Must be a hard-coded string, as required by `os_log` functions.
- */
-#define sf_os_signpost_interval_end(log, interval_id, name, ...) \
-    os_signpost_emit_with_type(log, OS_SIGNPOST_INTERVAL_END, interval_id, name, ##__VA_ARGS__);
-
-#define sf_os_signpost_id_generate(log) \
-({ os_signpost_id_t sid = OS_SIGNPOST_ID_INVALID; \
-    sid = os_signpost_id_generate(log); \
-    sid; \
-})
 
 #endif // SalesforceSDKConstants_h

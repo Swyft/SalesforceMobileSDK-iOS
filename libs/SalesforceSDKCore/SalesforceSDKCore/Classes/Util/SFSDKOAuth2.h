@@ -27,6 +27,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 /** SFOAuth default network timeout in seconds.
  */
@@ -59,7 +60,28 @@ enum {
     kSFOAuthErrorBrowserLaunchFailed,
     kSFOAuthErrorUnknownAdvancedAuthConfig,
     kSFOAuthErrorInvalidMDMConfiguration,
-    kSFOAuthErrorJWTInvalidGrant
+    kSFOAuthErrorJWTInvalidGrant,
+    kSFOAuthErrorRequestCancelled,
+    kSFOAuthErrorRefreshFailed, //generic error
+    kSFOAuthErrorInvalidURL,
+};
+
+typedef NS_ENUM(NSInteger, SFLogoutReason) {
+    SFLogoutReasonCorruptState,                     // Corrupted client state
+    SFLogoutReasonCorruptStateAppConfigurationSettings,    // bad configuration settings
+    SFLogoutReasonCorruptStateAppProviderErrorInvalidUser, // invalid user
+    SFLogoutReasonCorruptStateAppInvalidRestClient, // invalid rest client
+    SFLogoutReasonCorruptStateAppOther,             // other
+    SFLogoutReasonCorruptStateMSDK,                 // Corrupted client state detected by Mobile SDK
+    SFLogoutReasonTokenExpired,                     // Refresh token expired
+    SFLogoutReasonSSDKPolicy,                       // SSDK initiated logout for policy violation
+    SFLogoutReasonTimeout,                          // Timeout while waiting for server response
+    SFLogoutReasonUnexpected,                       // Unexpected error or crash
+    SFLogoutReasonUnexpectedResponse,               // Unexpected response from server
+    SFLogoutReasonUnknown,                          // Unknown
+    SFLogoutReasonUserInitiated,                    // User initiated logout
+    SFLogoutReasonRefreshTokenRotated,              // Refresh token rotated
+    SFLogoutReasonAppAttestationFailed              // App attestation permanently blocked this client
 };
 
 NS_ASSUME_NONNULL_BEGIN
@@ -68,19 +90,33 @@ NS_ASSUME_NONNULL_BEGIN
 @property  (nonatomic, readonly) NSString *tokenEndpointErrorCode;
 @property  (nonatomic, readonly) NSString *tokenEndpointErrorDescription;
 @property  (nonatomic, readonly) NSError *error;
+/// Typed enum representation of ``tokenEndpointErrorCode``.
+/// The enum is declared in Swift as `SFOAuthErrorCode`; use that type when calling
+/// from Swift. From Objective-C, the type is `NSInteger`.
+/// Use this property instead of string-comparing ``tokenEndpointErrorCode``.
+@property  (nonatomic, readonly) NSInteger errorCode;
 @end
 
 @interface SFSDKOAuthTokenEndpointRequest : NSObject
 @property (nonatomic, copy) NSString *refreshToken;
-@property (nonatomic, copy, nullable) NSString *userAgentForAuth;
 @property (nonatomic, copy) NSString *redirectURI;
 @property (nonatomic, copy) NSString *clientID;
 @property (nonatomic, copy, nullable) NSString *approvalCode;
 @property (nonatomic, copy, nullable) NSString *codeVerifier;
 @property (nonatomic, assign) NSTimeInterval timeout;
 @property (nonatomic, strong) NSURL *serverURL;
+@property (nonatomic, copy, nullable) NSString *attestation;
 @property (nonatomic, strong, nullable) NSDictionary * additionalTokenRefreshParams;
 @property (nonatomic, strong, nullable) NSArray<NSString *> *additionalOAuthParameterKeys;
+/// `SFOAuthCredentials.identifier` for the in-flight account. Used by the DPoP layer to
+/// scope the per-account keypair and nonce cache. Optional; when nil, DPoP is skipped.
+@property (nonatomic, copy, nullable) NSString *credentialsIdentifier;
+/// Carried through unchanged from `SFOAuthCredentials.tokenType`. Used by the DPoP
+/// layer so a DPoP-bound credential is honored even when the process-wide `usesDPoP`
+/// switch has been flipped off. On the fresh-login (auth code exchange) path this is
+/// typically nil since the token endpoint has not yet issued a tokenType; DPoP gating
+/// on that path falls back to the persisted-key-material signal.
+@property (nonatomic, copy, nullable) NSString *tokenType;
 @end
 
 @interface SFSDKOAuthTokenEndpointResponse : NSObject
@@ -90,6 +126,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSString *refreshToken;
 @property (nonatomic, readonly) NSDate *issuedAt;
 @property (nonatomic, readonly) NSURL *instanceUrl;
+@property (nonatomic, readonly) NSURL *apiInstanceUrl;
 @property (nonatomic, readonly) NSURL *identityUrl;
 @property (nonatomic, readonly, nullable) NSString *idToken;
 @property (nonatomic, readonly, nullable) NSString *communityId;
@@ -98,6 +135,22 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSString *signature;
 @property (nonatomic, readonly, nullable) NSArray<NSString *> *scopes;
 @property (nonatomic, readonly, nullable) NSDictionary *additionalOAuthFields;
+@property (nonatomic, readonly, nullable) NSString *lightningDomain;
+@property (nonatomic, readonly, nullable) NSString *lightningSid;
+@property (nonatomic, readonly, nullable) NSString *vfDomain;
+@property (nonatomic, readonly, nullable) NSString *vfSid;
+@property (nonatomic, readonly, nullable) NSString *contentDomain;
+@property (nonatomic, readonly, nullable) NSString *contentSid;
+@property (nonatomic, readonly, nullable) NSString *csrfToken;
+@property (nonatomic, readonly, nullable) NSString *cookieClientSrc;
+@property (nonatomic, readonly, nullable) NSString *cookieSidClient;
+@property (nonatomic, readonly, nullable) NSString *sidCookieName;
+@property (nonatomic, readonly, nullable) NSString *parentSid;
+@property (nonatomic, readonly, nullable) NSString *tokenFormat;
+@property (nonatomic, readonly, nullable) NSString *tokenType;
+@property (nonatomic, readonly, nullable) NSString *beaconChildConsumerKey;
+@property (nonatomic, readonly, nullable) NSString *beaconChildConsumerSecret;
+
 - (NSDictionary *)asDictionary;
 @end
 
@@ -105,14 +158,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)accessTokenForApprovalCode:(SFSDKOAuthTokenEndpointRequest *)endpointReq completion:(void (^)(SFSDKOAuthTokenEndpointResponse *))completionBlock;
 - (void)accessTokenForRefresh:(SFSDKOAuthTokenEndpointRequest *)endpointReq completion:(void (^)(SFSDKOAuthTokenEndpointResponse *))completionBlock;
 - (void)openIDTokenForRefresh:(SFSDKOAuthTokenEndpointRequest *)endpointReq completion:(void (^)(NSString *))completionBlock;
-- (void)revokeRefreshToken:(SFOAuthCredentials *)credentials;
+- (void)revokeRefreshToken:(SFOAuthCredentials *)credentials reason:(SFLogoutReason)reason;
 @end
 
-@protocol SFSDKOAuthSessionManaging<NSObject>
-- (NSURLSession *)createURLSessionWithIdentifier:(nonnull NSString *)identifier;
-@end
 
-@interface SFSDKOAuth2 : NSObject<SFSDKOAuthProtocol, SFSDKOAuthSessionManaging>
+
+@interface SFSDKOAuth2 : NSObject<SFSDKOAuthProtocol>
+
++ (NSMutableURLRequest *)requestForRevokeRefreshToken:(SFOAuthCredentials *)credentials reason:(SFLogoutReason)reason;
 
 @end
 

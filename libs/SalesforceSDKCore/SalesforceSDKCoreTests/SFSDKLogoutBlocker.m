@@ -25,7 +25,7 @@
 #import "SFSDKLogoutBlocker.h"
 #import <objc/runtime.h>
 #import "SFSDKCoreLogger.h"
-#import "SFUserAccountManager+Instrumentation.h"
+#import "SFUserAccountManager.h"
 #import "SFOAuthCredentials.h"
 
 @interface SFSDKLogoutBlocker()
@@ -49,34 +49,42 @@
     return swizzled;
 }
 
-+ (void)load{
-    
++ (void)load {
        static dispatch_once_t onceSwizzled;
         dispatch_once(&onceSwizzled, ^{
             [SFSDKCoreLogger d:[self class] format:@"Swizzled logout methods for Logout protection."];
             SEL originalSelector = @selector(logout);
             SEL swizzledSelector = @selector(dummy_logout);
-            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class]  isInstanceMethod:YES];
-
+            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class] isInstanceMethod:YES];
+            
+            originalSelector = @selector(logout:);
+            swizzledSelector = @selector(dummy_logout:);
+            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class] isInstanceMethod:YES];
+            
             originalSelector = @selector(logoutAllUsers);
             swizzledSelector = @selector(dummy_logoutAllUsers);
-            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class]  isInstanceMethod:YES];
-
+            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class] isInstanceMethod:YES];
+            
             originalSelector = @selector(logoutUser:);
             swizzledSelector = @selector(dummy_logoutUser:);
-            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class]   isInstanceMethod:YES];
-    
+            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class] isInstanceMethod:YES];
+            
+            originalSelector = @selector(logoutUser:reason:);
+            swizzledSelector = @selector(dummy_logoutUser:reason:);
+            [self swizzleMethod:originalSelector with:swizzledSelector forClass:[SFUserAccountManager class] isInstanceMethod:YES];
         });
-    
-    
 }
 
 - (void)dummy_logout {
-    
+}
+
+- (void)dummy_logout:(SFLogoutReason)reason {
 }
 
 - (void)dummy_logoutUser:(SFUserAccount *)user {
-  
+}
+
+- (void)dummy_logoutUser:(SFUserAccount *)user reason:(SFLogoutReason)reason {
 }
 
 - (void)dummy_logoutAllUsers {
@@ -91,12 +99,9 @@
 - (void)dummy_revokeRefreshToken{
 }
 
-
 + (void)swizzleMethod:(SEL)originalSelector with:(SEL)swizzledSelector forClass:(Class)clazz isInstanceMethod:(BOOL)isInstanceMethod {
-    
     Method originalMethod;
     Method swizzledMethod;
-    
     if (isInstanceMethod) {
         originalMethod = class_getInstanceMethod(clazz, originalSelector);
         swizzledMethod = class_getInstanceMethod(self, swizzledSelector);
@@ -104,13 +109,11 @@
         originalMethod = class_getClassMethod(clazz, originalSelector);
         swizzledMethod = class_getClassMethod(self, swizzledSelector);
     }
-    
     BOOL didAddMethod =
     class_addMethod(clazz,
                     originalSelector,
                     method_getImplementation(swizzledMethod),
                     method_getTypeEncoding(swizzledMethod));
-    
     if (didAddMethod) {
         class_replaceMethod(clazz,
                             swizzledSelector,

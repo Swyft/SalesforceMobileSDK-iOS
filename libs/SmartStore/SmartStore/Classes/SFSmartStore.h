@@ -23,10 +23,10 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class SFEncryptionKey;
 @class SFSoupIndex;
 @class SFSmartSqlCache;
 
@@ -65,7 +65,7 @@ extern NSString * const kSFSmartStoreEncryptionSaltLabel NS_SWIFT_NAME(SmartStor
 /**
  Block typedef for generating an encryption key.
  */
-typedef SFEncryptionKey*  _Nullable (^SFSmartStoreEncryptionKeyBlock)(void) NS_SWIFT_NAME(EncryptionKeyBlock);
+typedef NSData* _Nullable (^SFSmartStoreEncryptionKeyGenerator)(void) NS_SWIFT_NAME(EncryptionKeyGenerator);
 
 /**
  Block typedef for generating a 16 byte hash for sharing data betwween multiple apps.
@@ -80,53 +80,11 @@ extern NSString *const CREATED_COL NS_SWIFT_NAME(SmartStore.createdColumn);
 extern NSString *const LAST_MODIFIED_COL NS_SWIFT_NAME(SmartStore.lastModifiedColumn);
 extern NSString *const SOUP_COL NS_SWIFT_NAME(SmartStore.soupColumn);
 
-/**
- The columns of a soup fts table
- */
-extern NSString *const ROWID_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-
-/**
- Soup index map table
- */
-extern NSString *const SOUP_INDEX_MAP_TABLE NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-
-/**
- Soup attributes table
- */
-extern NSString *const SOUP_ATTRS_TABLE NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-
-/**
- Table to keep track of status of long operations in flight
-*/
-extern NSString *const LONG_OPERATIONS_STATUS_TABLE NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-
-/*
- Columns of the soup index map table
- */
-extern NSString *const SOUP_NAME_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const PATH_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const COLUMN_NAME_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const COLUMN_TYPE_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-
-/*
- Columns of the long operations status table
- */
-extern NSString *const TYPE_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const DETAILS_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const STATUS_COL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-
 /*
  JSON fields added to soup element on insert/update
 */
 extern NSString *const SOUP_ENTRY_ID NS_SWIFT_NAME(SmartStore.soupEntryId);
 extern NSString *const SOUP_LAST_MODIFIED_DATE NS_SWIFT_NAME(SmartStore.lastModifiedDate);
-
-/*
- Support for explain query plan
- */
-extern NSString *const EXPLAIN_SQL NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const EXPLAIN_ARGS NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
-extern NSString *const EXPLAIN_ROWS NS_SWIFT_UNAVAILABLE("Internal to SmartStore");
 
 @class FMDatabaseQueue;
 @class SFQuerySpec;
@@ -189,7 +147,8 @@ NS_SWIFT_NAME(SmartStore)
  Block used to generate the encryption key.
  Salesforce recommends using the default encryption key derivation.
  */
-@property (nonatomic, class, readonly)  SFSmartStoreEncryptionKeyBlock encryptionKeyBlock;
+@property (nonatomic, class, readonly) SFSmartStoreEncryptionKeyGenerator encryptionKeyGenerator;
+
 
 /**
  Block used to generate the salt. The salt is maintained in the keychain. Used only when database needs to be shared between apps.
@@ -266,17 +225,20 @@ NS_SWIFT_NAME(SmartStore)
  Also, SmartStore does not use initialization vectors.
  ** WARNING **
  
- @param newEncryptionKeyBlock The new encryption key derivation block to use with SmartStore.
+ @param newEncryptionKeyGenerator The new encryption key derivation block to use with SmartStore.
  */
-+ (void)setEncryptionKeyBlock:(SFSmartStoreEncryptionKeyBlock)newEncryptionKeyBlock;
-
-#pragma mark - Soup manipulation methods
++ (void)setEncryptionKeyGenerator:(SFSmartStoreEncryptionKeyGenerator)newEncryptionKeyGenerator;
 
 /**
- *  @param soupName Name of the soup.
- *  @return Specs of the soup if it exists.
+ Set license key for SQLCipher
+ Needed when using commercial or enterprise editions of SQLCipher
+ Should be called before using SmartStore
+ 
+ @param licenseKey The license key string provided by Zetetic
  */
-- (SFSoupSpec*)attributesForSoup:(NSString*)soupName NS_SWIFT_NAME(specification(forSoupNamed:));
++ (void)setLicenseKey:(NSString*)licenseKey;
+
+#pragma mark - Soup manipulation methods
 
 /**
  @param soupName Name of the soup.
@@ -300,28 +262,6 @@ NS_SWIFT_NAME(SmartStore)
 - (BOOL)registerSoup:(NSString*)soupName withIndexSpecs:(NSArray<SFSoupIndex*>*)indexSpecs error:(NSError**)error NS_SWIFT_NAME(registerSoup(withName:withIndices:));
 
 /**
- Creates a new soup or confirms the existence of an existing soup.
- @warning Deprecated. Use registerSoup:withIndexSpecs:error: instead.
-
- @param soupName The name of the soup to register.
- @param indexSpecs Array of one or more SFSoupIndex objects.
- @return YES if the soup is registered or already exists.
- */
-- (BOOL)registerSoup:(NSString*)soupName withIndexSpecs:(NSArray<SFSoupIndex*>*)indexSpecs
-    __attribute__((deprecated("Use -registerSoup:withIndexSpecs:error:")));
-
-/**
- Creates a new soup or confirms the existence of an existing soup.
- 
- @param soupSpec Soup specs of the soup to register.
- @param indexSpecs Array of one or more SFSoupIndex objects.
- @param error Sets/returns any error generated as part of the process.
- @return YES if the soup is registered or already exists.
-
- */
-- (BOOL)registerSoupWithSpec:(SFSoupSpec*)soupSpec withIndexSpecs:(NSArray<SFSoupIndex*>*)indexSpecs error:(NSError**)error NS_SWIFT_NAME(registerSoup(withSpecification:withIndices:));
-
-/**
  Get the number of entries that would be returned with the given query spec
  
  @param querySpec A native query spec.
@@ -339,6 +279,20 @@ NS_SWIFT_NAME(SmartStore)
  @return A set of entries given the pageSize provided in the querySpec.
  */
 - (NSArray * __nullable)queryWithQuerySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex error:(NSError **)error NS_SWIFT_NAME(query(using:startingFromPageIndex:));
+
+/**
+ Search for entries matching the given query spec with optional "where args" (i.e. bind args)
+ Provided bind args will be substituted to the ? found in the query
+ NB: Bind args are only supported for smart queries
+
+ @param querySpec A native query spec.
+ @param pageIndex The page index to start the entries at (this supports paging).
+ @param whereArgs The bind args (optional - only supported for smart queries).
+ @param error Sets/returns any error generated as part of the process.
+ 
+ @return A set of entries given the pageSize provided in the querySpec.
+ */
+- (NSArray * __nullable)queryWithQuerySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex whereArgs:(NSArray* __nullable)whereArgs error:(NSError **)error NS_SWIFT_NAME(query(using:startingFromPageIndex:whereArgs:));
 
 /**
  Search for entries matching the given query spec without deserializing any JSON
@@ -479,22 +433,6 @@ NS_SWIFT_NAME(SmartStore)
 - (unsigned long long)getDatabaseSize NS_SWIFT_NAME(databaseSize());
 
 /**
- Returns sum of all external file sizes for a given soup.
- 
- @param soupName Name of the soup.
- @return External file storage size, in bytes.
- */
-- (unsigned long long)getExternalFileStorageSizeForSoup:(NSString*)soupName NS_SWIFT_NAME(externalFileStorageSize(forSoupNamed:));
-
-/**
- Return the number of external storage files for a given soup.
- 
- @param soupName The name of the soup.
- @return Number of external files.
- */
-- (NSUInteger)getExternalFilesCountForSoup:(NSString*)soupName NS_SWIFT_NAME(externalFilesCount(forSoupNamed:));
-
-/**
  Alter soup indexes.
 
  @param soupName The name of the soup to alter.
@@ -503,18 +441,6 @@ NS_SWIFT_NAME(SmartStore)
  @return YES if the soup was altered successfully.
  */
 - (BOOL) alterSoup:(NSString*)soupName withIndexSpecs:(NSArray<SFSoupIndex*>*)indexSpecs reIndexData:(BOOL)reIndexData NS_SWIFT_NAME(alterSoup(named:indexSpecs:reIndexData:));
-
-/**
- Alter soup indexes.
- 
- @param soupName The name of the soup to alter.
- @param soupSpec The new soup spec to convert. (e.g. convert internal storage soup to external storage soup).
- @param indexSpecs Array of one ore more SFSoupIndex objects to replace existing index specs.
- @param reIndexData Pass YES if you want existing records to be re-indexed for new index specs.
- @return YES if the soup was altered successfully.
- */
-- (BOOL) alterSoup:(NSString*)soupName withSoupSpec:(SFSoupSpec*)soupSpec withIndexSpecs:(NSArray<SFSoupIndex*>*)indexSpecs reIndexData:(BOOL)reIndexData NS_SWIFT_NAME(alterSoup(named:soupSpec:indexSpecs:reIndexData:));
-
 
 /**
  Reindex a soup.
@@ -542,6 +468,18 @@ NS_SWIFT_NAME(SmartStore)
  * @return The version of SQL Cipher in use.
  */
 - (NSString *)getSQLCipherVersion NS_SWIFT_NAME(versionOfSQLCipher());
+
+/**
+ * Return SQLCipher provider version
+ * @return cipher provider version
+ */
+- (NSString *)getCipherProviderVersion NS_SWIFT_NAME(cipherProviderVersion());
+
+/**
+ * Return SQLCipher FIPS status
+ * @return true if using a FIPS enabled SQLCipher edition
+ */
+- (BOOL)getCipherFIPSStatus NS_SWIFT_NAME(cipherFIPSStatus());
 
 #pragma mark - Long operations recovery methods
 

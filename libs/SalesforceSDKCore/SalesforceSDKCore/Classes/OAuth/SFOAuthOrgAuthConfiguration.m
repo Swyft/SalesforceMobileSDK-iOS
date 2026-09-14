@@ -26,7 +26,9 @@
 
 static NSString * const kAuthConfigMobileSDKKey        = @"MobileSDK";
 static NSString * const kAuthConfigUseNativeBrowserKey = @"UseiOSNativeBrowserForAuthentication";
+static NSString * const kAuthConfigShareBrowserSession = @"shareBrowserSessionIOS";
 static NSString * const kAuthConfigSamlProvidersKey    = @"SamlProviders";
+static NSString * const kAuthConfigAuthProvidersKey    = @"AuthProviders";
 static NSString * const kAuthConfigSSOUrlKey           = @"SsoUrl";
 static NSString * const kAuthConfigLoginPageKey        = @"LoginPage";
 static NSString * const kAuthConfigLoginPageUrlKey     = @"LoginPageUrl";
@@ -53,14 +55,37 @@ static NSString * const kAuthConfigLoginPageUrlKey     = @"LoginPageUrl";
     return [self.authConfigDict[kAuthConfigMobileSDKKey][kAuthConfigUseNativeBrowserKey] boolValue];
 }
 
+- (BOOL)shareBrowserSession {
+    if ([self.authConfigDict[kAuthConfigMobileSDKKey] objectForKey:kAuthConfigShareBrowserSession] != nil) {
+        return [self.authConfigDict[kAuthConfigMobileSDKKey][kAuthConfigShareBrowserSession] boolValue];
+    } else {
+        // return false which means prompt=login being appended to login url
+        return false;
+    }
+}
+
 - (NSArray<NSString *> *)ssoUrls {
     NSMutableArray<NSString *> *ssoUrls = [[NSMutableArray alloc] init];
+
+    // Parses SAML provider list and adds it to the list of SSO URLs.
     NSArray *samlProviders = self.authConfigDict[kAuthConfigSamlProvidersKey];
     if (samlProviders && samlProviders.count > 0) {
         for (int i = 0; i < samlProviders.count; i++) {
             NSDictionary *provider = samlProviders[i];
             if (provider) {
                 ssoUrls[i] = provider[kAuthConfigSSOUrlKey];
+            }
+        }
+    }
+
+    // Parses auth provider list and adds it to the list of SSO URLs.
+    NSUInteger curPos = samlProviders.count;
+    NSArray *authProviders = self.authConfigDict[kAuthConfigAuthProvidersKey];
+    if (authProviders && authProviders.count > 0) {
+        for (int i = 0; i < authProviders.count; i++) {
+            NSDictionary *provider = authProviders[i];
+            if (provider) {
+                ssoUrls[curPos + i] = provider[kAuthConfigSSOUrlKey];
             }
         }
     }

@@ -41,10 +41,11 @@
     if (self) {
         self.navBarColor = [UIColor salesforceBlueColor];
         self.navBarTitleColor = [UIColor whiteColor];
-        self.navBarTintColor = [UIColor whiteColor];
+        self.navBarTintColor = [UIColor salesforceNavBarTintColor];
         self.navBarFont = nil;
         _showNavbar = YES;
         _showSettingsIcon = YES;
+        _showServerPicker = YES;
     }
     return self;
 }

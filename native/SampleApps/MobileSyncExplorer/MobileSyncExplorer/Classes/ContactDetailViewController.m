@@ -69,6 +69,11 @@
     self.navigationController.navigationBar.tintColor = [UIColor whiteColor];
     [self configureInitialBarButtonItems];
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+  
+    // To address iOS 15 spacing issue
+    // See https://developer.apple.com/forums/thread/684706
+    [self.tableView setSectionHeaderTopPadding:0.0f];
+    
     if (self.isNewContact) {
         [self editContact];
     }
@@ -278,12 +283,13 @@
 
 - (UIButton *)deleteButtonView {
     BOOL deleted = ([[self.contact fieldValueForFieldName:kSyncTargetLocallyDeleted] boolValue]);
-    UIButton *deleteButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButtonConfiguration *configuration = [UIButtonConfiguration plainButtonConfiguration];
+    configuration.contentInsets = NSDirectionalEdgeInsetsMake(0, 15, 0, 0);
+    UIButton *deleteButton = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
     [deleteButton setTitle:(deleted ? @"Undelete Contact" : @"Delete Contact") forState:UIControlStateNormal];
     [deleteButton setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
     deleteButton.titleLabel.font = [UIFont systemFontOfSize:18.0];
     deleteButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-    deleteButton.contentEdgeInsets = UIEdgeInsetsMake(0, 15, 0, 0);
     [deleteButton addTarget:self action:(deleted ? @selector(undeleteContact) : @selector(deleteContactConfirm)) forControlEvents:UIControlEventTouchUpInside];
     return deleteButton;
 }

@@ -35,7 +35,10 @@ typedef NS_ENUM(NSUInteger, SFOAuthType) {
     SFOAuthTypeRefresh,
     SFOAuthTypeAdvancedBrowser,
     SFOAuthTypeJwtTokenExchange,
-    SFOAuthTypeIDP
+    SFOAuthTypeIDP,
+    SFOAuthTypeWebServer,
+    SFOAuthTypeNative,
+    SFOAuthTypeRefreshTokenMigration,
 } NS_SWIFT_NAME(AuthInfo.AuthType);
 
 /**

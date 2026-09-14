@@ -22,10 +22,11 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import "SFQuerySpec.h"
 #import <SalesforceSDKCommon/SFJsonUtils.h>
-#import "SFSmartStore.h"
 #import <SalesforceSDKCore/NSDictionary+SFAdditions.h>
+#import "SFSmartStore.h"
+#import "SFSmartStore+Internal.h"
+#import "SFQuerySpec.h"
 
 NSString * const kQuerySpecSortOrderAscending = @"ascending";
 NSString * const kQuerySpecSortOrderDescending = @"descending";
@@ -157,17 +158,17 @@ NSString * const kQuerySpecParamSmartSql = @"smartSql";
 
 - (id)initWithDictionary:(NSDictionary*)querySpec withSoupName:(NSString*) targetSoupName {
     
-    NSString* rawQueryType = [querySpec nonNullObjectForKey:kQuerySpecParamQueryType];
-    NSString* path = [querySpec nonNullObjectForKey:kQuerySpecParamIndexPath];
-    NSArray* selectPaths = [querySpec nonNullObjectForKey:kQuerySpecParamSelectPaths];
-    NSString* beginKey = [querySpec nonNullObjectForKey:kQuerySpecParamBeginKey];
-    NSString* endKey = [querySpec nonNullObjectForKey:kQuerySpecParamEndKey];
-    NSString* matchKey = [querySpec nonNullObjectForKey:kQuerySpecParamMatchKey];
-    NSString* likeKey = [querySpec nonNullObjectForKey:kQuerySpecParamLikeKey];
-    NSString* smartSql = [querySpec nonNullObjectForKey:kQuerySpecParamSmartSql];
-    NSString* orderPath = [querySpec nonNullObjectForKey:kQuerySpecParamOrderPath];
-    NSString* rawOrder =  [querySpec nonNullObjectForKey:kQuerySpecParamOrder];
-    NSNumber* rawPageSize = [querySpec nonNullObjectForKey:kQuerySpecParamPageSize];
+    NSString* rawQueryType = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamQueryType];
+    NSString* path = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamIndexPath];
+    NSArray* selectPaths = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamSelectPaths];
+    NSString* beginKey = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamBeginKey];
+    NSString* endKey = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamEndKey];
+    NSString* matchKey = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamMatchKey];
+    NSString* likeKey = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamLikeKey];
+    NSString* smartSql = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamSmartSql];
+    NSString* orderPath = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamOrderPath];
+    NSString* rawOrder =  [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamOrder];
+    NSNumber* rawPageSize = [querySpec sfsdk_nonNullObjectForKey:kQuerySpecParamPageSize];
 
     SFSoupQuerySortOrder order = [SFQuerySpec sortOrderFromString:rawOrder];
     NSUInteger pageSize = ([rawPageSize integerValue] > 0 ? [rawPageSize integerValue] : kQuerySpecDefaultPageSize);
@@ -330,7 +331,7 @@ NSString * const kQuerySpecParamSmartSql = @"smartSql";
                       @" WHERE ",
                       [self computeSoupFtsReference],
                       @" MATCH '",
-                      [SFQuerySpec qualifyMatchKey:self.matchKey field:field], // match clause -- statement arg binding doesn't seem to work so inlining matchKey
+                      [[SFQuerySpec qualifyMatchKey:self.matchKey field:field] stringByReplacingOccurrencesOfString:@"'" withString:@"''"], // match clause -- statement arg binding doesn't seem to work so inlining matchKey
                       @"') "
                       ]
                     componentsJoinedByString:@""];
@@ -392,7 +393,6 @@ NSString * const kQuerySpecParamSmartSql = @"smartSql";
 
 - (NSString*)computeFieldReference:(NSString*) field {
     NSString* fieldRef = [@[@"{", self.soupName, @":", field, @"}"] componentsJoinedByString:@""];
-    [SFSDKSmartStoreLogger d:[self class] format:@"computeFieldReference: %@ --> %@", field, fieldRef];
     return fieldRef;
 }
 

@@ -27,13 +27,14 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import "SFNetwork.h"
+#import "SFNetwork+Internal.h"
 #import "SalesforceSDKManager.h"
 #import <SalesforceSDKCommon/SFSDKSafeMutableDictionary.h>
 
 NSString * const kSFNetworkEphemeralInstanceIdentifier = @"com.salesforce.network.ephemeralSession";
 NSString * const kSFNetworkBackgroundInstanceIdentifier = @"com.salesforce.network.backgroundSession";
 static SFSDKSafeMutableDictionary *sharedInstances = nil;
+static SFSDKMetricsCollectedBlock _metricsCollectedAction = nil;
 
 @interface SFNetwork()<NSURLSessionDelegate, NSURLSessionTaskDelegate>
 
@@ -83,18 +84,28 @@ static SFSDKSafeMutableDictionary *sharedInstances = nil;
     return self;
 }
 
-- (NSURLSessionDataTask *)sendRequest:(NSMutableURLRequest *)urlRequest dataResponseBlock:(SFDataResponseBlock)dataResponseBlock {
-
+- (NSURLSessionDataTask *)dataTaskForRequest:(NSMutableURLRequest *)urlRequest dataResponseBlock:(SFDataResponseBlock)dataResponseBlock {
     // Sets Mobile SDK user agent if it hasn't been set already elsewhere.
     if (![urlRequest.allHTTPHeaderFields.allKeys containsObject:@"User-Agent"]) {
         [urlRequest setValue:[SalesforceSDKManager sharedManager].userAgentString(@"") forHTTPHeaderField:@"User-Agent"];
     }
-    NSURLSessionDataTask *dataTask = [self.activeSession dataTaskWithRequest:urlRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    return [self.activeSession dataTaskWithRequest:urlRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (dataResponseBlock) {
             dataResponseBlock(data, response, error);
         }
     }];
+}
+
+- (void)resumeDataTask:(NSURLSessionDataTask *)dataTask {
     [dataTask resume];
+}
+
+- (NSURLSessionDataTask *)sendRequest:(NSURLRequest *)urlRequest dataResponseBlock:(SFDataResponseBlock)dataResponseBlock {
+    NSMutableURLRequest *requestToSend = [urlRequest isKindOfClass:[NSMutableURLRequest class]]
+        ? (NSMutableURLRequest *)urlRequest
+        : [urlRequest mutableCopy];
+    NSURLSessionDataTask *dataTask = [self dataTaskForRequest:requestToSend dataResponseBlock:dataResponseBlock];
+    [self resumeDataTask:dataTask];
     return dataTask;
 }
 
@@ -117,16 +128,28 @@ static SFSDKSafeMutableDictionary *sharedInstances = nil;
 
 + (void)removeSharedInstanceForIdentifier:(nullable NSString *)identifier {
     if (identifier) {
+        [[(SFNetwork *)sharedInstances[identifier] activeSession] invalidateAndCancel];
         [sharedInstances removeObject:identifier];
     }
 }
 
 + (void)removeAllSharedInstances {
+    for (SFNetwork *network in sharedInstances.allValues) {
+        [network.activeSession invalidateAndCancel];
+    }
     [sharedInstances removeAllObjects];
 }
 
 + (NSString *)uniqueInstanceIdentifier  {
     return [NSString stringWithFormat:@"com.salesforce.network.%@", [[NSUUID UUID] UUIDString]];
+}
+
++ (void)setMetricsCollectedAction:(SFSDKMetricsCollectedBlock)metricsCollectedAction {
+    _metricsCollectedAction = metricsCollectedAction;
+}
+
++ (SFSDKMetricsCollectedBlock)metricsCollectedAction {
+    return _metricsCollectedAction;
 }
 
 #pragma mark - NSURLSessionDelegate
@@ -140,12 +163,35 @@ static SFSDKSafeMutableDictionary *sharedInstances = nil;
     }
 }
 
--(void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler {
-    if ([task.originalRequest valueForHTTPHeaderField:@"Authorization"]) {
-        // Don't auto follow redirects in authenticated case
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler {
+    if ([task.originalRequest valueForHTTPHeaderField:@"Authorization"] && ![self isSalesforceURL:request.URL]) {
+        // Don't auto follow redirects in authenticated case if we don't recognize the domain
         completionHandler(nil);
     } else {
-        completionHandler(request);
+        NSMutableURLRequest *newRequest = [request mutableCopy];
+        [newRequest setAllHTTPHeaderFields:task.originalRequest.allHTTPHeaderFields];
+        [newRequest setHTTPBody:task.originalRequest.HTTPBody];
+        [newRequest setHTTPMethod:task.originalRequest.HTTPMethod];
+        completionHandler(newRequest);
+    }
+}
+
+- (BOOL)isSalesforceURL:(NSURL *)url {
+    // List from https://help.salesforce.com/s/articleView?language=en_US&id=sf.domain_name_url_formats.htm&type=5
+    return [url.host hasSuffix:@".salesforce.com"] ||
+           [url.host hasSuffix:@".force.com"] ||
+           [url.host hasSuffix:@".sfdcopens.com"] ||
+           [url.host hasSuffix:@".site.com"] ||
+           [url.host hasSuffix:@".lightning.com"] ||
+           [url.host hasSuffix:@".salesforce-sites.com"] ||
+           [url.host hasSuffix:@".force-user-content.com"] ||
+           [url.host hasSuffix:@".salesforce-experience.com"] ||
+           [url.host hasSuffix:@".salesforce-scrt.com"];
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics {
+    if (_metricsCollectedAction) {
+        _metricsCollectedAction(session, task, metrics);
     }
 }
 

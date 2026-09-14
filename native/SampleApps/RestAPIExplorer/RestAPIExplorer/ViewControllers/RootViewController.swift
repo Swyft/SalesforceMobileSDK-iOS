@@ -61,7 +61,7 @@ struct ContentSection {
         self.titleLabel.translatesAutoresizingMaskIntoConstraints = false
         self.titleLabel.font = UIFont.appRegularFont(20)
         self.titleLabel.text = title
-        self.titleLabel.textColor = UIColor.init(forLightStyle: UIColor.appDarkBlue, darkStyle: UIColor.white)
+        self.titleLabel.textColor = UIColor.sfsdk_color(forLightStyle: .appDarkBlue, darkStyle: .white)
         self.container.addSubview(self.titleLabel)
         self.titleLabel.leftAnchor.constraint(equalTo: self.container.leftAnchor, constant: ContentSection.horizontalMargin).isActive = true
  
@@ -135,18 +135,27 @@ class RootViewController: UIViewController {
         super.viewDidLoad()
         self.view.backgroundColor = UIColor.appContentBackground
 
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: RootViewController, _: UITraitCollection) in
+            self.updateBorderColor()
+        }
+
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(clearPopoversForPasscode),
-                                               name: NSNotification.Name(rawValue: kSFPasscodeFlowWillBegin),
+                                               name: NSNotification.Name(rawValue: kSFScreenLockFlowWillBegin),
                                                object: nil)
-        
-        self.navigationController?.navigationBar.barTintColor = UIColor.appDarkBlue
-        self.navigationController?.navigationBar.isTranslucent = false
         
         guard let font = UIFont.appRegularFont(20) else {
             return
         }
-        self.navigationController?.navigationBar.titleTextAttributes = [NSAttributedString.Key.foregroundColor: UIColor.white, NSAttributedString.Key.font: font]
+        let navBarAppearance = UINavigationBarAppearance()
+        navBarAppearance.backgroundColor = UIColor.appDarkBlue
+        navBarAppearance.titleTextAttributes = [NSAttributedString.Key.foregroundColor: UIColor.white, NSAttributedString.Key.font: font]
+
+        self.navigationController?.navigationBar.scrollEdgeAppearance = navBarAppearance;
+        self.navigationController?.navigationBar.compactAppearance = navBarAppearance;
+        self.navigationController?.navigationBar.standardAppearance = navBarAppearance;
+        self.navigationController?.navigationBar.compactScrollEdgeAppearance = navBarAppearance;
+     
         self.title = "RestAPI Explorer"
         
         guard let leftImage = UIImage(named: "list")?.withRenderingMode(.alwaysOriginal), let _ = UIImage(named: "search")?.withRenderingMode(.alwaysOriginal) else {
@@ -276,7 +285,7 @@ class RootViewController: UIViewController {
         label.font = UIFont.appRegularFont(12)
         label.lineBreakMode = .byTruncatingTail
         label.numberOfLines = 1
-        label.textColor = UIColor.init(forLightStyle: UIColor.appLabel, darkStyle: UIColor.white)
+        label.textColor = UIColor.sfsdk_color(forLightStyle: UIColor.appLabel, darkStyle: UIColor.white)
         
         let field = UITextView()
         field.translatesAutoresizingMaskIntoConstraints = false
@@ -536,14 +545,6 @@ class RootViewController: UIViewController {
         return self.responseSection.container
     }
     
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        if #available(iOS 13.0, *) {
-            if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
-                self.updateBorderColor()
-            }
-        }
-    }
     
     func updateBorderColor() -> Void {
         for textField in self.textFields {
@@ -557,7 +558,11 @@ class RootViewController: UIViewController {
     @objc func userDidTapQueryButton(_ sender: UIButton) {
         print("handle tapped query button")
         self.view.endEditing(true)
-        guard let path = self.manualQueryTextField.text, let method = RestRequest.Method(rawValue: self.methodControl.selectedSegmentIndex) else {return}
+        
+        guard let path = self.manualQueryTextField.text,
+              let method = RestRequest.Method(rawValue: self.methodControl.selectedSegmentIndex) else {
+            return
+        }
         
         var queryParams: [String: Any]?
         if let params = self.paramsTextView.text {
@@ -565,13 +570,8 @@ class RootViewController: UIViewController {
         }
         
         let request = RestRequest(method: method, path: path, queryParams: queryParams)
-        RestClient.shared.send(request: request) { result in
-            switch result {
-                case .success(let response):
-                    self.handleSuccess(request: request, response: response)
-                case .failure(let error):
-                    self.handleError(request: request, error: error)
-            }
+        Task {
+            await handleResponseForRequest(request: request)
         }
     }
     
@@ -586,7 +586,7 @@ class RootViewController: UIViewController {
     
     func handleError(request: RestRequest, error: RestClientError) {
         switch error {
-            case .apiInvocationFailed(let underlyingError, _):
+            case .apiFailed(_, let underlyingError, _):
                 SalesforceLogger.e(RootViewController.self, message: "Error invoking api \(underlyingError.localizedDescription)")
             default:
                 DispatchQueue.main.async {
@@ -634,15 +634,18 @@ class RootViewController: UIViewController {
                                       preferredStyle: .alert)
         
         let logout = UIAlertAction(title: "Logout", style: .default) { _ in
-            UserAccountManager.shared.logout()
+            UserAccountManager.shared.logout(SFLogoutReason.userInitiated)
         }
         let cancel = UIAlertAction(title: "Cancel", style: .cancel) { _ in
             self.presentedViewController?.dismiss(animated: true, completion: nil)
         }
         alert.addAction(cancel)
         alert.addAction(logout)
-        self.present(alert, animated: true, completion: nil)
-        self.logoutAlert = alert
+        
+        dismissPopover() {
+            self.present(alert, animated: true, completion: nil)
+            self.logoutAlert = alert
+        }
     }
     
     @objc func clearPopoversForPasscode() {
@@ -655,9 +658,9 @@ class RootViewController: UIViewController {
         self.dismissPopover()
     }
     
-    func dismissPopover() {
+    func dismissPopover(completion: (() -> ())? = nil) {
         if let pAction = self.presentedActions {
-            pAction.dismiss(animated: true, completion: nil)
+            pAction.dismiss(animated: true, completion: completion)
         }
     }
     
@@ -847,6 +850,8 @@ extension RootViewController: ActionTableViewDelegate {
                 return
             }
             request = restApi.request(forDeleteFileShare: objId, apiVersion: SFRestDefaultAPIVersion)
+        case .primingRecords:
+            request = restApi.request(forPrimingRecords: nil, changedAfterTimestamp: nil, apiVersion: SFRestDefaultAPIVersion)
         case .currentUserInfo:
             guard let currentAccount = UserAccountManager.shared.currentUserAccount else {return}
             let idData = currentAccount.idData
@@ -854,12 +859,6 @@ extension RootViewController: ActionTableViewDelegate {
             userInfoString += "\nID: " + idData.username
             userInfoString += "\nEmail: " + idData.email
             self.showAlert("User Info", message: userInfoString)
-            return
-        case .enableBiometric:
-            // Uncomment this code to find the current state of biometric unlock
-            //UserAccountManager.shared.biometricUnlockState()
-            
-            UserAccountManager.shared.presentBiometricEnrollment(nil)
             return
         case .logout:
             self.presentedViewController?.dismiss(animated: true, completion: nil)
@@ -869,23 +868,39 @@ extension RootViewController: ActionTableViewDelegate {
             let umvc = SalesforceUserManagementViewController.init(completionBlock: { _ in
                 self.dismiss(animated: true, completion: nil)
             })
-            self.present(umvc, animated: true, completion: nil)
+            dismissPopover {
+                self.present(umvc, animated: true, completion: nil)
+            }
             return
         case .exportCredentials:
             self.exportTestingCredentials()
             return
-            
+        case .overrideStyleLight:
+            SFSDKWindowManager.shared().userInterfaceStyle = .light
+            return
+        case .overrideStyleDark:
+            SFSDKWindowManager.shared().userInterfaceStyle = .dark
+            return
+        case .overrideStyleUnspecified:
+            SFSDKWindowManager.shared().userInterfaceStyle = .unspecified
+            return
         }
         
-        if let sendRequest = request {
-            RestClient.shared.send(request: sendRequest) { result in
-                switch result {
-                    case .success(let response):
-                        self.handleSuccess(request: sendRequest, response: response)
-                    case .failure(let error):
-                        self.handleError(request: sendRequest, error: error)
-                }
+        if let requestToSend = request {
+            Task {
+                await handleResponseForRequest(request: requestToSend)
             }
+        }
+    }
+    
+    private func handleResponseForRequest(request: RestRequest) async {
+        do {
+            let response = try await RestClient.shared.send(request: request)
+            self.handleSuccess(request: request, response: response)
+        } catch let error as RestClientError {
+            self.handleError(request: request, error: error)
+        } catch {
+            self.handleError(request: request, error: RestClientError.invalidRequest(error.localizedDescription))
         }
     }
 }

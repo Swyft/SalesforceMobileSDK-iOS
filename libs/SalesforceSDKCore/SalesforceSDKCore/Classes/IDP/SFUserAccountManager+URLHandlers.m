@@ -28,12 +28,14 @@
  */
 
 #import "SFUserAccountManager+Internal.h"
+#import "SFSDKWindowManager+Internal.h"
 #import "SFUserAccountManager+URLHandlers.h"
-#import "SFSDKAuthRequestCommand.h"
+#import "SFSDKSPLoginRequestCommand.h"
 #import "SFSDKIDPConstants.h"
-#import "SFSDKAuthResponseCommand.h"
+#import "SFSDKSPLoginResponseCommand.h"
 #import "SFSDKAuthErrorCommand.h"
-#import "SFSDKIDPInitCommand.h"
+#import "SFSDKIDPLoginRequestCommand.h"
+#import "SFSDKIDPAuthCodeLoginRequestCommand.h"
 #import "SFSDKAlertMessage.h"
 #import "SFSDKAlertMessageBuilder.h"
 #import "SFSDKStartURLHandler.h"
@@ -53,13 +55,13 @@
     }];
    
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.alertDisplayBlock(messageObject,[SFSDKWindowManager sharedManager].authWindow);
+        self.alertDisplayBlock(messageObject, [[SFSDKWindowManager sharedManager] authWindow:nil]);
         [self stopCurrentAuthentication:nil];
     });
     return YES;
 }
 
-- (BOOL)handleIdpInitiatedAuth:(SFSDKIDPInitCommand *)command {
+- (BOOL)handleIdpInitiatedAuth:(SFSDKIDPLoginRequestCommand *)command {
     
     NSString *userHint = command.userHint;
     [SFSDKCoreLogger d:[self class] format:@"handle handleIdpInitiatedAuth for %@", [command.allParams description]];
@@ -88,7 +90,7 @@
     return YES;
 }
 
-- (BOOL)handleAuthRequestFromSPApp:(SFSDKAuthRequestCommand *)request {
+- (BOOL)handleAuthRequestFromSPApp:(SFSDKSPLoginRequestCommand *)request {
     NSString *userHint = request.spUserHint;
     [SFSDKCoreLogger d:[self class] format:@"handleAuthRequestFromSPApp for %@", [request.allParams description]];
     
@@ -100,7 +102,7 @@
     if (userHint) {
         SFUserAccountIdentity *identity = [self decodeUserIdentity:userHint];
         SFUserAccount *userAccount = [self userAccountForUserIdentity:identity];
-        if (userAccount.credentials.accessToken!=nil) {
+        if (userAccount.credentials.accessToken != nil) {
             [SFSDKCoreLogger d:[self class] format:@"handleAuthRequestFromSPApp userAccount found for userHint"];
         }
         [self selectedUser:userAccount spAppContext:request.allParams];
@@ -117,13 +119,15 @@
 
     if (showSelection) {
         dispatch_async(dispatch_get_main_queue(), ^{
-           UIViewController<SFSDKUserSelectionView> *controller  = self.idpUserSelectionAction();
-           controller.spAppOptions = request.allParams;
-           controller.userSelectionDelegate = self;
-           controller.modalPresentationStyle = UIModalPresentationFullScreen;
-           SFSDKWindowContainer *authWindow = [SFSDKWindowManager sharedManager].authWindow;
-           [authWindow presentWindowAnimated:NO withCompletion:^{
-               [authWindow.viewController presentViewController:controller animated:NO  completion:nil];
+            SFSDK_USE_DEPRECATED_BEGIN
+            UIViewController<SFSDKUserSelectionView> *controller = self.idpUserSelectionAction();
+            SFSDK_USE_DEPRECATED_END
+            controller.spAppOptions = request.allParams;
+            controller.userSelectionDelegate = self;
+            controller.modalPresentationStyle = UIModalPresentationFullScreen;
+            SFSDKWindowContainer *authWindow = [[SFSDKWindowManager sharedManager] authWindow:nil];
+            [authWindow presentWindowAnimated:NO withCompletion:^{
+                [authWindow.viewController presentViewController:controller animated:NO completion:nil];
            }];
         });
     } else {
@@ -132,23 +136,68 @@
     return YES;
 }
 
-- (BOOL)handleIdpResponse:(SFSDKAuthResponseCommand *)response {
-    if (self.authSession) {
-        [self.authSession.oauthCoordinator handleIDPAuthenticationResponse:[response requestURL]];
+- (BOOL)handleIdpResponse:(SFSDKSPLoginResponseCommand *)response sceneId:(NSString *)sceneId {
+    if (!sceneId) {
+        sceneId = [[SFSDKWindowManager sharedManager] defaultScene].session.persistentIdentifier;
+    }
+    if (self.authSessions[sceneId]) {
+        SFSDK_USE_DEPRECATED_BEGIN
+        [self.authSessions[sceneId].oauthCoordinator handleIDPAuthenticationResponse:[response requestURL]];
+        SFSDK_USE_DEPRECATED_END
     } else {
         SFSDKAlertMessage *messageObject = [SFSDKAlertMessage messageWithBlock:^(SFSDKAlertMessageBuilder *builder) {
             builder.actionOneTitle = [SFSDKResourceUtils localizedString:@"authAlertCancelButton"];
             builder.alertTitle = @"Authentication Failed";
             builder.alertMessage = @"Authentication session for sp app was evicted. Try again." ;
-            builder.actionTwoTitle = [SFSDKResourceUtils localizedString:@"Retry"];
-            builder.actionTwoCompletion = ^{
-                [self restartAuthentication];
-            };
          }];
         
          dispatch_async(dispatch_get_main_queue(), ^{
-             self.alertDisplayBlock(messageObject,[SFSDKWindowManager sharedManager].authWindow);
+             self.alertDisplayBlock(messageObject, [[SFSDKWindowManager sharedManager] authWindow:self.authSessions[sceneId].oauthRequest.scene]);
          });
+    }
+    return YES;
+}
+
+- (BOOL)handleIdpRequest:(SFSDKIDPAuthCodeLoginRequestCommand *_Nonnull)response sceneId:(nullable NSString *)sceneId completion:(nullable SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                 failure:(nullable SFUserAccountManagerFailureCallbackBlock)failureBlock {
+    [SFSDKCoreLogger d:[self class] format:@"handleIdpRequest for %@", [response.allParams description]];
+
+
+    if (!sceneId) {
+        sceneId = [[SFSDKWindowManager sharedManager] defaultScene].session.persistentIdentifier;
+    }
+    
+    if (self.authSessions[sceneId]) {
+        SFSDK_USE_DEPRECATED_BEGIN
+        [self.authSessions[sceneId].oauthCoordinator handleIDPAuthenticationResponse:[response requestURL]];
+        SFSDK_USE_DEPRECATED_END
+    } else if (response.keychainReference) {
+        // IDP - SP: Need to create auth session
+        NSString *userHint = response.userHint;
+        if (userHint) {
+            SFUserAccountIdentity *identity = [self decodeUserIdentity:userHint];
+            SFUserAccount *userAccount = [self userAccountForUserIdentity:identity];
+            if (userAccount.credentials.accessToken != nil) {
+                // We already have that user - let's select it and discard the code
+                [SFSDKCoreLogger d:[self class] format:@"handleIdpRequest userAccount found for userHint"];
+                [self switchToUser:userAccount];
+                SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeIDP];
+                completionBlock(authInfo, userAccount);
+                return YES;
+            }
+        }
+        // We don't have that user - let's create a auth session to login using the code
+        SFSDKAuthRequest *request = [self defaultAuthRequest];
+        request.idpInitiatedAuth = YES;
+        SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
+        authSession.authFailureCallback = failureBlock;
+        authSession.authSuccessCallback = completionBlock;
+        self.authSessions[sceneId] = authSession;
+        SFSDK_USE_DEPRECATED_BEGIN
+        [self.authSessions[sceneId].oauthCoordinator handleIDPAuthenticationResponse:[response requestURL]];
+        SFSDK_USE_DEPRECATED_END
+        authSession.isAuthenticating = YES;
+        authSession.oauthCoordinator.delegate = self;
     }
     return YES;
 }

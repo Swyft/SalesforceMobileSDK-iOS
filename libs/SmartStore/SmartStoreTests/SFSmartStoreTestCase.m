@@ -26,8 +26,7 @@
 #import "SFSoupIndex.h"
 #import <SalesforceSDKCommon/SFJsonUtils.h>
 #import "SFSmartStore+Internal.h"
-#import "FMDatabaseQueue.h"
-#import "FMDatabase.h"
+@import FMDB;
 @interface SFOAuthCredentials ()
 @property (nonatomic, readwrite, nullable) NSURL *identityUrl;
 
@@ -159,7 +158,7 @@
 {
     NSString* soupTableName = [self getSoupTableName:soupName store:store];
     NSString* indexName = [NSString stringWithFormat:@"%@_%lu_idx", soupTableName, (unsigned long)index];
-    NSString* expectedDetailPrefix = [NSString stringWithFormat:@"%@ TABLE %@ USING %@INDEX %@", dbOperation, soupTableName, (covering ? @"COVERING " : @""), indexName];
+    NSString* expectedDetailPrefix = [NSString stringWithFormat:@"%@ %@ USING %@INDEX %@", dbOperation, soupTableName, (covering ? @"COVERING " : @""), indexName];
     NSString* actualDetail = ((NSArray*)store.lastExplainQueryPlan[EXPLAIN_ROWS])[0][@"detail"];
     XCTAssertTrue([actualDetail hasPrefix:expectedDetailPrefix], "Wrong explain plan actual: %@", actualDetail);
 }
@@ -271,11 +270,8 @@
     
     // Getting soup table name and storage type
     __block NSString *soupTableName;
-    __block BOOL soupUsesExternalStorage;
     [store.storeQueue inDatabase:^(FMDatabase *db) {
         soupTableName = [store tableNameForSoup:soupName withDb:db];
-        SFSoupSpec *soupSpec = [store attributesForSoup:soupName withDb:db];
-        soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
     }];
     
     // Getting soup indexes
@@ -306,10 +302,8 @@
                     if (![soupIndex.indexType isEqualToString:kSoupIndexTypeJSON1]) {
                         XCTAssertEqualObjects(actualRow[soupIndex.columnName], expectedEntry[soupIndex.path], @"Mismatching values for path %@ for entry %@", soupIndex.path, soupEntryId);
                     }
-                    if (!soupUsesExternalStorage) {
-                        NSDictionary* actualEntry = [SFJsonUtils objectFromJSONString:actualRow[SOUP_COL]];
-                        [self assertSameJSONWithExpected:expectedEntry actual:actualEntry message:[NSString stringWithFormat:@"Mismatching json for entry %@", soupEntryId]];
-                    }
+                    NSDictionary* actualEntry = [SFJsonUtils objectFromJSONString:actualRow[SOUP_COL]];
+                    [self assertSameJSONWithExpected:expectedEntry actual:actualEntry message:[NSString stringWithFormat:@"Mismatching json for entry %@", soupEntryId]];
                 }
                 
             }
@@ -319,29 +313,6 @@
             XCTAssertFalse([frs next], @"None of the entries should have been found");
         }
     }];
-}
-
--(void) checkFileSystem:(NSArray*)expectedEntries shouldExist:(BOOL)shouldExist store:(SFSmartStore*)store soupName:(NSString*)soupName
-{
-    __block NSString *soupTableName;
-    [store.storeQueue inDatabase:^(FMDatabase *db) {
-        soupTableName = [store tableNameForSoup:soupName withDb:db];
-    }];
-    
-    for (NSDictionary* expectedEntry in expectedEntries) {
-        NSNumber* soupEntryId = expectedEntry[SOUP_ENTRY_ID];
-        NSString *externalEntryFilePath = [store
-                                           externalStorageSoupFilePath:soupEntryId                                                               soupTableName:soupTableName];
-        BOOL fileExists = [[NSFileManager defaultManager] fileExistsAtPath:externalEntryFilePath];
-        if (shouldExist) {
-            XCTAssertTrue(fileExists, @"External file for %@ should exist", soupEntryId);
-            NSDictionary* actualEntry = [store loadExternalSoupEntry:soupEntryId soupTableName:soupTableName];
-            [self assertSameJSONWithExpected:expectedEntry actual:actualEntry message:@"Wrong json"];
-        }
-        else {
-            XCTAssertFalse(fileExists, @"External file for %@ should not exist", soupEntryId);
-        }
-    }
 }
 
 - (SFUserAccount*)setUpSmartStoreUser

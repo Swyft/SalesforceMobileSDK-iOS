@@ -24,24 +24,11 @@
 
 #import "SFEncryptionKey.h"
 #import "SFSDKCryptoUtils.h"
-#import <CommonCrypto/CommonCrypto.h>
-
-// NSCoding constants
-static NSString * const kEncryptionKeyCodingValue = @"com.salesforce.encryption.key.data";
-static NSString * const kInitializationVectorCodingValue = @"com.salesforce.encryption.key.iv";
 
 @implementation SFEncryptionKey
 
 @synthesize key = _key;
 @synthesize initializationVector = _initializationVector;
-
-+ (SFEncryptionKey*) createKey
-{
-    NSData *keyData = [SFSDKCryptoUtils randomByteDataWithLength:kCCKeySizeAES256];
-    NSData *iv = [SFSDKCryptoUtils randomByteDataWithLength:kCCBlockSizeAES128];
-    SFEncryptionKey *key = [[SFEncryptionKey alloc] initWithData:keyData initializationVector:iv];
-    return key;
-}
 
 - (id)initWithData:(NSData *)key initializationVector:(NSData *)iv
 {
@@ -51,30 +38,6 @@ static NSString * const kInitializationVectorCodingValue = @"com.salesforce.encr
         self.initializationVector = iv;
     }
     return self;
-}
-
-- (id)initWithCoder:(NSCoder *)aDecoder
-{
-    self = [super init];
-    if (self) {
-        self.key = [aDecoder decodeObjectForKey:kEncryptionKeyCodingValue];
-        self.initializationVector = [aDecoder decodeObjectForKey:kInitializationVectorCodingValue];
-    }
-    return self;
-}
-
-- (void)encodeWithCoder:(NSCoder *)aCoder
-{
-    [aCoder encodeObject:self.key forKey:kEncryptionKeyCodingValue];
-    [aCoder encodeObject:self.initializationVector forKey:kInitializationVectorCodingValue];
-}
-
-- (id)copyWithZone:(NSZone *)zone
-{
-    SFEncryptionKey *keyCopy = [[[self class] allocWithZone:zone] init];
-    keyCopy.key = [NSData dataWithData:self.key];
-    keyCopy.initializationVector = [NSData dataWithData:self.initializationVector];
-    return keyCopy;
 }
 
 - (NSString *)keyAsString
@@ -105,20 +68,5 @@ static NSString * const kInitializationVectorCodingValue = @"com.salesforce.encr
     result = 43 * result + [_initializationVector hash];
     return result;
 }
-
-- (NSData*)encryptData:(NSData *)dataToEncrypt
-{
-    return [SFSDKCryptoUtils aes256EncryptData:dataToEncrypt
-                                       withKey:self.key
-                                            iv:self.initializationVector];
-}
-
-- (NSData*)decryptData:(NSData *)dataToDecrypt
-{
-    return [SFSDKCryptoUtils aes256DecryptData:dataToDecrypt
-                                       withKey:self.key
-                                            iv:self.initializationVector];
-}
-
 
 @end

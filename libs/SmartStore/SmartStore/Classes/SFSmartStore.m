@@ -24,44 +24,35 @@
 
 //required for UIApplicationProtectedDataDidBecomeAvailable
 #import <UIKit/UIKit.h>
-#import "sqlite3.h"
-#import "FMDatabase.h"
-#import "FMDatabaseAdditions.h"
-#import "FMDatabaseQueue.h"
-#import <SalesforceSDKCommon/SFJsonUtils.h>
+@import SQLCipher;
+@import FMDB;
 #import "SFSmartStore+Internal.h"
-#import "SFSmartStoreUpgrade.h"
 #import "SFSmartStoreUtils.h"
 #import "SFSmartSqlHelper.h"
 #import "SFSmartSqlCache.h"
 #import "SFSoupIndex.h"
 #import "SFQuerySpec.h"
-#import "SFSoupSpec.h"
-#import "SFSoupSpec+Internal.h"
-#import <SalesforceSDKCore/SFPasscodeManager.h>
-#import <SalesforceSDKCore/SFKeyStoreManager.h>
-#import <SalesforceSDKCore/SFEncryptionKey.h>
-#import <SalesforceSDKCore/SFSDKCryptoUtils.h>
-#import <SalesforceSDKCore/SFEncryptStream.h>
-#import <SalesforceSDKCore/SFDecryptStream.h>
 #import "SFAlterSoupLongOperation.h"
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
+#import <SalesforceSDKCore/SFSDKCryptoUtils.h>
 #import <SalesforceSDKCore/SFUserAccountManager.h>
 #import <SalesforceSDKCore/SFDirectoryManager.h>
 #import <SalesforceSDKCore/SalesforceSDKManager.h>
 #import <SalesforceSDKCore/SFSDKEventBuilderHelper.h>
 #import <SalesforceSDKCore/SFSDKAppFeatureMarkers.h>
-#import <SalesforceSDKCore/NSData+SFAdditions.h>
 #import <SalesforceSDKCore/SFSDKCryptoUtils.h>
-#import <SalesforceSDKCore/SFKeychainItemWrapper.h>
+#import <SalesforceSDKCore/NSData+SFAdditions.h>
+#import <SalesforceSDKCommon/SalesforceSDKCommon-Swift.h>
 #import <SalesforceSDKCommon/SFSDKDataSharingHelper.h>
+#import <SalesforceSDKCommon/SFJsonUtils.h>
 
 static NSMutableDictionary *_allSharedStores;
 static NSMutableDictionary *_allGlobalSharedStores;
-static SFSmartStoreEncryptionKeyBlock _encryptionKeyBlock = NULL;
+static SFSmartStoreEncryptionKeyGenerator _encryptionKeyGenerator = NULL;
 static SFSmartStoreEncryptionSaltBlock _encryptionSaltBlock = NULL;
-static BOOL _storeUpgradeHasRun = NO;
 static BOOL _jsonSerializationCheckEnabled = NO;
 static BOOL _postRawJsonOnError = NO;
+static NSString* _licenseKey = NULL;
 
 // The name of the store name used by the SFSmartStorePlugin for hybrid apps
 NSString * const kDefaultSmartStoreName   = @"defaultStore";
@@ -73,15 +64,17 @@ NSString * const kSFSmartStoreJSONSerializationErrorNotification = @"SFSmartStor
 
 // NSError constants  (TODO: We should move this stuff into a framework where errors can be configurable
 // in a plist, once we start delivering a bundle.
-NSString *        const kSFSmartStoreErrorDomain                = @"com.salesforce.smartstore.error";
-static NSInteger  const kSFSmartStoreTooManyEntriesCode         = 1;
-static NSString * const kSFSmartStoreTooManyEntriesDescription  = @"Cannot update entry: the value '%@' for path '%@' does not represent a unique entry!";
-static NSInteger  const kSFSmartStoreIndexNotDefinedCode        = 2;
-static NSString * const kSFSmartStoreIndexNotDefinedDescription = @"No index column defined for field '%@'.";
-static NSInteger  const kSFSmartStoreExternalIdNilCode          = 3;
-static NSString * const kSFSmartStoreExternalIdNilDescription   = @"For upsert with external ID path '%@', value cannot be empty for any entries.";
-static NSString * const kSFSmartStoreExtIdLookupError           = @"There was an error retrieving the soup entry ID for path '%@' and value '%@': %@";
-static NSInteger  const kSFSmartStoreOtherErrorCode             = 999;
+NSString *        const kSFSmartStoreErrorDomain                 = @"com.salesforce.smartstore.error";
+static NSInteger  const kSFSmartStoreTooManyEntriesCode          = 1;
+static NSString * const kSFSmartStoreTooManyEntriesDescription   = @"Cannot update entry: the value '%@' for path '%@' does not represent a unique entry!";
+static NSInteger  const kSFSmartStoreIndexNotDefinedCode         = 2;
+static NSString * const kSFSmartStoreIndexNotDefinedDescription  = @"No index column defined for field '%@'.";
+static NSInteger  const kSFSmartStoreExternalIdNilCode           = 3;
+static NSString * const kSFSmartStoreExternalIdNilDescription    = @"For upsert with external ID path '%@', value cannot be empty for any entries.";
+static NSString * const kSFSmartStoreExtIdLookupError = @"There was an error retrieving the soup entry ID for path '%@' and value '%@': %@";
+static NSInteger  const kSFSmartStoreWhereArgsNotSupportedCode   = 5;
+static NSString * const kSFSmartStoreWhereArgsNotSupportedDescription = @"whereArgs can only be provided for smart queries";
+static NSInteger  const kSFSmartStoreOtherErrorCode              = 999;
 
 NSString *const kSFSmartStoreErrorLoadExternalSoup =  @"com.salesforce.smartstore.LoadExternalSoupError";
 
@@ -90,36 +83,19 @@ NSString * const kSFSmartStoreEncryptionKeyLabel = @"com.salesforce.smartstore.e
 
 // Encryption constants
 NSString * const kSFSmartStoreEncryptionSaltLabel = @"com.salesforce.smartstore.encryption.saltLabel";
+NSUInteger const kSFSmartStoreEncryptionSaltLength = 16;
 
 // Table to keep track of soup attributes
-NSString *const SOUP_ATTRS_TABLE = @"soup_attrs";
 static NSString *const SOUP_NAMES_TABLE = @"soup_names"; //legacy soup attrs, still around for backward compatibility. Do not use it.
 
-// Table to keep track of soup's index specs
-NSString *const SOUP_INDEX_MAP_TABLE = @"soup_index_map";
-
 // Columns of the soup index map table
-NSString *const SOUP_NAME_COL = @"soupName";
-NSString *const PATH_COL = @"path";
 NSString *const COLUMN_NAME_COL = @"columnName";
-NSString *const COLUMN_TYPE_COL = @"columnType";
 
 // Columns of a soup table
 NSString *const ID_COL = @"id";
 NSString *const CREATED_COL = @"created";
 NSString *const LAST_MODIFIED_COL = @"lastModified";
 NSString *const SOUP_COL = @"soup";
-
-// Columns of a soup fts table
-NSString *const ROWID_COL = @"rowid";
-
-// Table to keep track of status of long operations in flight
-NSString *const LONG_OPERATIONS_STATUS_TABLE = @"long_operations_status";
-
-// Columns of long operations status table
-NSString *const TYPE_COL = @"type";
-NSString *const DETAILS_COL = @"details";
-NSString *const STATUS_COL = @"status";
 
 // JSON fields added to soup element on insert/update
 NSString *const SOUP_ENTRY_ID = @"_soupEntryId";
@@ -128,7 +104,6 @@ NSString *const SOUP_LAST_MODIFIED_DATE = @"_soupLastModifiedDate";
 // Explain support
 NSString *const EXPLAIN_SQL = @"sql";
 NSString *const EXPLAIN_ARGS = @"args";
-NSString *const EXPLAIN_ROWS = @"rows";
 
 // Caches count limit
 NSUInteger CACHES_COUNT_LIMIT = 1024;
@@ -137,19 +112,32 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 
 + (void)initialize
 {
-    if (!_encryptionKeyBlock) {
-        _encryptionKeyBlock = ^SFEncryptionKey *{
-            SFEncryptionKey *key = [[SFKeyStoreManager sharedInstance] retrieveKeyWithLabel:kSFSmartStoreEncryptionKeyLabel autoCreate:YES];
+    if (!_encryptionKeyGenerator) {
+        _encryptionKeyGenerator = ^NSData *{
+            NSError *error = nil;
+            NSData *key = [SFSDKKeyGenerator encryptionKeyFor:kSFSmartStoreEncryptionKeyLabel error:&error];
+            if (error) {
+                [SFSDKSmartStoreLogger e:[self class] format:@"Error getting encryption key: %@", error.localizedDescription];
+            }
             return key;
         };
     }
     
     if (!_encryptionSaltBlock) {
         _encryptionSaltBlock = ^ {
-            NSString* salt = nil;
-            if ([[SFKeyStoreManager sharedInstance] keyWithLabelExists:kSFSmartStoreEncryptionSaltLabel] || [[SFSDKDatasharingHelper sharedInstance] appGroupEnabled]) {
-                SFEncryptionKey *saltKey = [[SFKeyStoreManager sharedInstance]   retrieveKeyWithLabel:kSFSmartStoreEncryptionSaltLabel autoCreate:YES];
-                salt = [[saltKey key] digest];
+            NSString *salt = nil;
+ 
+            NSData *existingSalt = [SFSDKKeychainHelper readWithService:kSFSmartStoreEncryptionSaltLabel account:nil].data;
+            if (existingSalt) {
+                salt = [existingSalt sfsdk_newHexStringFromBytes];
+            } else if ([[SFSDKDatasharingHelper sharedInstance] appGroupEnabled]) {
+                NSData *newSalt = [[NSMutableData dataWithLength:kSFSmartStoreEncryptionSaltLength] sfsdk_randomDataOfLength:kSFSmartStoreEncryptionSaltLength];
+                SFSDKKeychainResult *result = [SFSDKKeychainHelper writeWithService:kSFSmartStoreEncryptionSaltLabel data:newSalt account:nil];
+                if (result.success) {
+                    salt = [newSalt sfsdk_newHexStringFromBytes];
+                } else {
+                    [SFSDKSmartStoreLogger e:[self class] format:@"Error writing salt to keychain: %@", result.error.localizedDescription];
+                }
             }
             return salt;
         };
@@ -171,14 +159,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             return nil;
         }
         [SFSDKSmartStoreLogger d:[self class] format:@"%@ %@, user: %@, isGlobal: %d", NSStringFromSelector(_cmd), name, [SFSmartStoreUtils userKeyForUser:user], isGlobal];
-        @synchronized ([SFSmartStore class]) {
-            if ([SFUserAccountManager sharedInstance].currentUser != nil && !_storeUpgradeHasRun) {
-                _storeUpgradeHasRun = YES;
-                [SFSmartStoreUpgrade updateStoreLocations];
-                [SFSmartStoreUpgrade updateEncryption];
-                [SFSmartStoreUpgrade updateEncryptionSalt];
-            }
-        }
         _storeName = name;
         _isGlobal = isGlobal;
         _user = user;
@@ -187,7 +167,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureSmartStoreGlobal];
         } else {
             _dbMgr = [SFSmartStoreDatabaseManager sharedManagerForUser:_user];
-            [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureSmartStoreUser];
+            [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureSmartStoreUser forUser:_user];
         }
         
         // Setup listening for data protection available / unavailable
@@ -215,9 +195,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         _soupNameToTableName = [[NSCache alloc] init];
         _soupNameToTableName.countLimit = CACHES_COUNT_LIMIT;
         
-        _attrSpecBySoup = [[NSCache alloc] init];
-        _attrSpecBySoup.countLimit = CACHES_COUNT_LIMIT;
-        
         _indexSpecsBySoup = [[NSCache alloc] init];
         _indexSpecsBySoup.countLimit = CACHES_COUNT_LIMIT;
         
@@ -239,9 +216,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
                 }
             }
         }
-        
-        // Register features in soup attributes table.
-        [self registerNewSoupAttribute:kSoupFeatureExternalStorage];
     }
     return self;
 }
@@ -250,7 +224,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     [SFSDKSmartStoreLogger d:[self class] format:@"dealloc store: '%@'", _storeName];
     [self.storeQueue close];
     SFRelease(_soupNameToTableName);
-    SFRelease(_attrSpecBySoup);
     SFRelease(_indexSpecsBySoup);
     SFRelease(_smartSqlToSql);
     
@@ -286,9 +259,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         [SFSDKSmartStoreLogger e:[self class] format:@"Deleting store dir since we can't set it up properly: %@", self.storeName];
         [self.dbMgr removeStoreDir:self.storeName];
     }
-    if (self.user != nil) {
-        [SFSmartStoreUpgrade setUsesKeyStoreEncryption:result forUser:self.user store:self.storeName];
-    }
     return result;
 }
 
@@ -323,7 +293,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 
 - (BOOL) openStoreDatabase {
     NSError *openDbError = nil;
-    NSString *salt =  [[self class]encryptionSaltBlock] ? [[self class] encryptionSaltBlock]() :nil;
+    NSString *salt = [[self class]encryptionSaltBlock] ? [[self class] encryptionSaltBlock]() : nil;
     self.storeQueue = [self.dbMgr openStoreQueueWithName:self.storeName key:[[self class] encKey] salt:salt error:&openDbError];
     if (self.storeQueue == nil) {
         [SFSDKSmartStoreLogger e:[self class] format:@"Error opening store '%@': %@", self.storeName, [openDbError localizedDescription]];
@@ -416,7 +386,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             [existingStore.storeQueue close];
             [_allSharedStores[userKey] removeObjectForKey:storeName];
         }
-        [SFSmartStoreUpgrade setUsesKeyStoreEncryption:NO forUser:user store:storeName];
         [[SFSmartStoreDatabaseManager sharedManagerForUser:user] removeStoreDir:storeName];
     }
 }
@@ -523,36 +492,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     [self executeUpdateThrows:createSoupNamesTableSql withDb:db];
     [self createLongOperationsStatusTableWithDb:db];
     [self executeUpdateThrows:createSoupNamesIndexSql withDb:db];
-}
-
-- (void)registerNewSoupAttribute:(NSString *)attrColName
-{
-    [self inDatabase:^(FMDatabase *db) {
-        if (![db columnExists:attrColName inTableWithName:SOUP_ATTRS_TABLE]) {
-            // Add column attrColName in SOUP_ATTRS_TABLE
-            NSString *addAttrColSql = [NSString stringWithFormat:
-                                          @"ALTER TABLE %@ ADD COLUMN %@ INTEGER DEFAULT 0",
-                                          SOUP_ATTRS_TABLE,
-                                          attrColName
-                                          ];
-            [SFSDKSmartStoreLogger d:[self class] format:@"addAttrColSql: %@", addAttrColSql];
-            [self executeUpdateThrows:addAttrColSql withDb:db];
-        }
-    } error:nil];
-}
-
-- (NSArray *)registeredSoupFeaturesWithDb:(FMDatabase*)db
-{
-    NSMutableArray *result = [[NSMutableArray alloc] init];
-    FMResultSet *attrsSchema = [db getTableSchema:SOUP_ATTRS_TABLE];
-    while ([attrsSchema next]) {
-        NSString *col = [attrsSchema stringForColumn:@"name"];
-        if (![col isEqualToString:ID_COL] && ![col isEqualToString:SOUP_NAME_COL]) {
-            [result addObject:col];
-        }
-    }
-    [attrsSchema close];
-    return result;
 }
 
 - (BOOL)createLongOperationsStatusTable
@@ -745,17 +684,15 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     return soupNames;
 }
 
-+ (NSString *)encKey
-{
-    if (_encryptionKeyBlock) {
-        SFEncryptionKey *key = _encryptionKeyBlock();
-        return key.keyAsString;
++ (NSString *)encKey {
+    if (_encryptionKeyGenerator) {
+        NSData *key = _encryptionKeyGenerator();
+        return [key base64EncodedStringWithOptions:0];
     }
     return nil;
 }
 
-+ (NSString *)salt
-{
++ (NSString *)salt {
     if (_encryptionSaltBlock) {
         return  _encryptionSaltBlock();
     }
@@ -772,14 +709,22 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     }
 }
 
-+ (SFSmartStoreEncryptionKeyBlock)encryptionKeyBlock {
-    return _encryptionKeyBlock;
++ (SFSmartStoreEncryptionKeyGenerator)encryptionKeyGenerator {
+    return _encryptionKeyGenerator;
 }
 
-+ (void)setEncryptionKeyBlock:(SFSmartStoreEncryptionKeyBlock)newEncryptionKeyBlock {
-    if (newEncryptionKeyBlock != _encryptionKeyBlock) {
-        _encryptionKeyBlock = newEncryptionKeyBlock;
++ (void)setEncryptionKeyGenerator:(SFSmartStoreEncryptionKeyGenerator)newEncryptionKeyGenerator {
+    if (newEncryptionKeyGenerator != _encryptionKeyGenerator) {
+        _encryptionKeyGenerator = newEncryptionKeyGenerator;
     }
+}
+
++ (NSString *)licenseKey {
+    return _licenseKey;
+}
+
++ (void)setLicenseKey:(NSString*)licenseKey {
+    _licenseKey = [licenseKey copy];
 }
 
 - (NSNumber *)currentTimeInMilliseconds {
@@ -799,128 +744,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     return _dataProtectionKnownAvailable;
 }
 
-#pragma mark - External Storage utility methods
-
-- (NSString *)externalStorageRootDirectory {
-    return [[self.storePath stringByDeletingPathExtension] stringByAppendingString:@"_external_soup_blobs"];
-}
-
-- (NSString *)externalStorageSoupDirectory:(NSString *)soupTableName {
-    NSString *rootDir = [self externalStorageRootDirectory];
-    return [rootDir stringByAppendingPathComponent:soupTableName];
-}
-
-- (NSString *)externalStorageSoupFilePath:(NSNumber *)soupEntryId
-                            soupTableName:(NSString *)soupTableName {
-    NSString *soupDir = [self externalStorageSoupDirectory:soupTableName];
-    return [soupDir stringByAppendingPathComponent:[NSString stringWithFormat:@"soupelt_%@", soupEntryId]];
-}
-
-- (BOOL)createExternalStorageDirectory:(NSString *)soupTableName {
-    NSError *error = nil;
-    NSString *dir = [self externalStorageSoupDirectory:soupTableName];
-    BOOL dirExists = [SFDirectoryManager ensureDirectoryExists:dir error:&error];
-    if (!dirExists) {
-        [SFSDKSmartStoreLogger e:[self class] format:@"Failed to create external storage directory at path '%@', error: %@", dir, error];
-    }
-    return dirExists;
-}
-
-- (BOOL)saveSoupEntryExternally:(NSDictionary *)soupEntry
-                    soupEntryId:(NSNumber *)soupEntryId
-                  soupTableName:(NSString *)soupTableName {
-    
-    // Helper to log messages
-    void (^log)(NSString* step) = ^(NSString* step) {
-        NSString *message = [NSString stringWithFormat:@"%@ (%@): soupEntryId: %@, soupTableName: %@",
-                             NSStringFromSelector(_cmd),
-                             step,
-                             soupEntryId,
-                             soupTableName];
-        [SFSDKSmartStoreLogger i:[self class] format:message];
-    };
-    
-    // Computing file path for soup entry
-    NSString *filePath = [self externalStorageSoupFilePath:soupEntryId
-                                             soupTableName:soupTableName];
-    if (filePath == nil) {
-        return NO;
-    }
-
-    // Computing tmp file path
-    // Entry is written to tmp file first, then tmp file is renamed to make write closer to an atomic operation
-    NSString *tmpFilePath = [NSString stringWithFormat:@"%@_tmp", filePath];
-    
-    // Setting up output stream
-    NSOutputStream *outputStream = nil;
-    SFSmartStoreEncryptionKeyBlock keyBlock = [SFSmartStore encryptionKeyBlock];
-    if (keyBlock) {
-        SFEncryptStream *encryptStream = [[SFEncryptStream alloc] initToFileAtPath:tmpFilePath append:NO];
-        SFEncryptionKey *encKey = keyBlock();
-        [encryptStream setupWithEncryptionKey:encKey];
-        outputStream = encryptStream;
-    } else {
-        outputStream = [[NSOutputStream alloc] initToFileAtPath:tmpFilePath append:NO];
-    }
-    
-    // Writing to tmp file
-    log(@"1/4 Starting to write to tmp file");
-    [outputStream open];
-    NSError *error = nil;
-    
-    // NSJSONSerialization:writeJSONObject returns the number of bytes written
-    // So NSJSONSerialization:writeJSONObject can return a value > 0 while there is an error
-    [NSJSONSerialization writeJSONObject:soupEntry
-                                toStream:outputStream
-                                 options:0
-                                   error:&error];
-    [outputStream close];
-    
-    if (error) {
-        [SFSmartStore buildEventOnJsonSerializationErrorForUser:self.user fromMethod:NSStringFromSelector(_cmd) error:error];
-    }
-
-    BOOL success = !error;
-    
-    // Renaming tmp file by using moveItemAtPath (but first check if destination exists and deletes it if it does)
-    if (success) {
-        log(@"2/4 Done writing to tmp file");
-        log(@"3/4 Renaming tmp file");
-        
-        if ([[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
-            success = [[NSFileManager defaultManager] removeItemAtPath:filePath
-                                                                 error:&error];
-        }
-
-        if (success) {
-            success = [[NSFileManager defaultManager] moveItemAtPath:tmpFilePath toPath:filePath error:&error];
-            
-            if (success) {
-                log(@"4/4 Done renaming tmp file");
-            }
-        }
-    }
-    
-    if (!success) {
-        NSString *errorMessage = [NSString stringWithFormat:@"Saving external soup to file failed! encrypted: %@, soupEntryId: %@, soupTableName: %@, tmpFilePath: '%@', filePath: '%@', error: %@.",
-                                  keyBlock ? @"YES" : @"NO",
-                                  soupEntryId,
-                                  soupTableName,
-                                  tmpFilePath,
-                                  filePath,
-                                  error];
-        [SFSDKSmartStoreLogger e:[self class] format:errorMessage];
-    }
-    
-    return success;
-}
-
-
-- (id)loadExternalSoupEntry:(NSNumber *)soupEntryId
-              soupTableName:(NSString *)soupTableName
-{
-    return [SFJsonUtils objectFromJSONString:[self loadExternalSoupEntryAsString:soupEntryId soupTableName:soupTableName]];
-}
 
 + (void)buildEventOnJsonParseErrorForUser:(SFUserAccount *)user fromMethod:(NSString*)fromMethod rawJson:(NSString*)rawJson {
     NSMutableDictionary *attributes = [[NSMutableDictionary alloc] init];
@@ -954,88 +777,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     }
 }
 
-- (NSString*)loadExternalSoupEntryAsString:(NSNumber *)soupEntryId
-                             soupTableName:(NSString *)soupTableName
-{
-    NSString *filePath = [self externalStorageSoupFilePath:soupEntryId
-                                             soupTableName:soupTableName];
-    
-    SFSmartStoreEncryptionKeyBlock keyBlock = [SFSmartStore encryptionKeyBlock];
-    SFEncryptionKey* encKey;
-    if (keyBlock) {
-        encKey = keyBlock();
-    }
-    
-    NSString* entryAsString = [self readFromEncryptedFile:filePath
-                                                   encKey:encKey];
-    
-    // Before 6.2, we were using nill IV when encrypting.
-    // Starting in 6.2, we are using a non-nil IV when encrypting.
-    // If it doesn't look like proper json, it means the entry was encrypted with pre 6.2 SDK.
-    // It needs to be stored back with a non-nil IV encryption.
-    if (![entryAsString hasPrefix:@"{"]) {
-        NSDictionary* entry = [SFJsonUtils objectFromJSONString:entryAsString];
-        
-        if(!entry) {
-            if (encKey.initializationVector) {
-                entryAsString = [self readFromEncryptedFile:filePath encKey:encKey useNilIV:YES];
-                if ([entryAsString length] > 0) {
-                    [self writeToEncryptedFile:filePath
-                                       content:entryAsString
-                                        encKey:encKey];
-                } else {
-                    [SFSDKSmartStoreLogger e:[self class] format:@"Attempt to migrate an encrypted externally saved soup '%@' with a null IV  failed.", soupTableName];
-                }
-            } else {
-                NSError* error = [SFJsonUtils lastError];
-                NSString *errorMessage = [NSString stringWithFormat:@"Loading external soup from file failed! encrypted: %@, soupEntryId: %@, soupTableName: %@, filePath: '%@', error: %@.",
-                                          encKey ? @"YES" : @"NO",
-                                          soupEntryId,
-                                          soupTableName,
-                                          filePath,
-                                          error];
-                [SFSDKSmartStoreLogger e:[self class] format:errorMessage];
-                @throw [NSException exceptionWithName:kSFSmartStoreErrorLoadExternalSoup
-                                               reason:errorMessage
-                                             userInfo:nil];
-                
-            }
-        }
-    }
-
-    // Check for valid JSON.
-    if (![self checkRawJson:entryAsString fromMethod:NSStringFromSelector(_cmd)]) {
-        return nil;
-    } else {
-        return entryAsString;
-    }
-}
-
-- (NSString*) readFromEncryptedFile:(NSString*)filePath
-                             encKey:(SFEncryptionKey*)encKey
-{
-    return [self readFromEncryptedFile:filePath encKey:encKey useNilIV:NO];
-}
-
-- (NSString*) readFromEncryptedFile:(NSString*)filePath
-                             encKey:(SFEncryptionKey*)encKey
-                           useNilIV:(BOOL)useNilIV
-{
-    NSInputStream *inputStream = nil;
-    if (encKey) {
-        SFDecryptStream *decryptStream = [[SFDecryptStream alloc] initWithFileAtPath:filePath];
-        if (useNilIV) {
-            encKey = [[SFEncryptionKey alloc] initWithData:encKey.key initializationVector:nil];
-        }
-        [decryptStream setupWithDecryptionKey:encKey];
-        inputStream = decryptStream;
-    } else {
-        inputStream = [[NSInputStream alloc] initWithFileAtPath:filePath];
-    }
-    
-    return [SFSmartStore stringFromInputStream:inputStream];
-}
-
 + (NSString*) stringFromInputStream:(NSInputStream*)inputStream {
     //
     // We get all the bytes and then convert them to a string
@@ -1051,50 +792,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     }
     [inputStream close];
     return [[NSString alloc] initWithData:content encoding:NSUTF8StringEncoding];
-}
-
-- (void) writeToEncryptedFile:(NSString*)filePath
-                       content:(NSString *)content
-                       encKey:(SFEncryptionKey*)encKey
-{
-    NSOutputStream *outputStream = nil;
-    if (encKey) {
-        SFEncryptStream *encryptStream = [[SFEncryptStream alloc] initToFileAtPath:filePath append:NO];
-        [encryptStream setupWithEncryptionKey:encKey];
-        outputStream = encryptStream;
-    } else {
-        outputStream = [[NSOutputStream alloc] initToFileAtPath:filePath append:NO];
-    }
-    [outputStream open];
-    NSData *data = [content dataUsingEncoding:NSUTF8StringEncoding];
-    [outputStream write:data.bytes maxLength:data.length];
-    [outputStream close];
-}
-
-- (void)deleteExternalSoupEntry:(NSNumber *)soupEntryId
-                  soupTableName:(NSString *)soupTableName {
-    NSString *filePath = [self externalStorageSoupFilePath:soupEntryId
-                                             soupTableName:soupTableName];
-    NSError *delError = nil;
-    if (![[NSFileManager defaultManager] removeItemAtPath:filePath
-                                                    error:&delError]) {
-        [SFSDKSmartStoreLogger e:[self class] format:@"Failed to delete external entry at path '%@', error: %@.", filePath, delError];
-    }
-}
-
-- (void)deleteAllExternalEntries:(NSString *)soupTableName
-                       deleteDir:(BOOL)deleteDir {
-    NSString *dirPath = [self externalStorageSoupDirectory:soupTableName];
-    
-    NSError *deleteDirError = nil;
-    if (![[NSFileManager defaultManager] removeItemAtPath:dirPath error:&deleteDirError]) {
-        [SFSDKSmartStoreLogger e:[self class] format:@"Failed to delete external soup dir path '%@', error: %@.", dirPath, deleteDirError];
-    }
-    
-    // Re-create dir if necessary
-    if (!deleteDir) {
-        [self createExternalStorageDirectory:soupTableName];
-    }
 }
 
 #pragma mark - Data access utility methods
@@ -1150,27 +847,28 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 }
 
 - (NSString*)columnNameForPath:(NSString*)path inSoup:(NSString*)soupName withDb:(FMDatabase*) db {
-    //TODO cache these with soupName:path ? if slow...
     NSString *result = nil;
-    if (nil == path) {
-        return result;
+    NSArray* indexSpecs = [self indicesForSoup:soupName withDb:db];
+    for (SFSoupIndex* indexSpec in indexSpecs) {
+        if ([indexSpec.path isEqualToString:path]) {
+            result = indexSpec.columnName;
+        }
     }
     
-    NSString *querySql = [NSString stringWithFormat:@"SELECT %@ FROM %@ WHERE %@ = ? AND %@ = ?",
-                          COLUMN_NAME_COL,SOUP_INDEX_MAP_TABLE,
-                          SOUP_NAME_COL,
-                          PATH_COL
-                          ];
-    FMResultSet *frs = [self executeQueryThrows:querySql withArgumentsInArray:@[soupName, path] withDb:db];
-    if ([frs next]) {
-        result = [frs stringForColumnIndex:0];
-    }
-    [frs close];
     if (nil == result) {
         [SFSDKSmartStoreLogger d:[self class] format:@"Unknown index path '%@' in soup '%@' ", path, soupName];
     }
     return result;
-    
+}
+
+- (BOOL) hasIndexForPath:(NSString*)path inSoup:(NSString*)soupName withDb:(FMDatabase*) db {
+    NSArray* indexSpecs = [self indicesForSoup:soupName withDb:db];
+    for (SFSoupIndex* indexSpec in indexSpecs) {
+        if ([indexSpec.path isEqualToString:path]) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 - (NSString*) convertSmartSql:(NSString*)smartSql
@@ -1280,43 +978,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     return result;
 }
 
-- (SFSoupSpec*)attributesForSoup:(NSString*)soupName {
-    __block SFSoupSpec *specs = nil;
-    [self inDatabase:^(FMDatabase* db) {
-        specs = [self attributesForSoup:soupName withDb:db];
-    } error:nil];
-    return specs;
-}
-
-- (SFSoupSpec*)attributesForSoup:(NSString*)soupName withDb:(FMDatabase *)db {
-    //look in the cache first
-    SFSoupSpec *attrs = [_attrSpecBySoup objectForKey:soupName];
-    if (nil == attrs) {
-        //no cached attributes ...reload from SOUP_ATTRS_TABLE
-        NSString *attrsSql = [NSString stringWithFormat:@"SELECT * FROM %@ WHERE %@ = ?", SOUP_ATTRS_TABLE, SOUP_NAME_COL];
-        [SFSDKSmartStoreLogger d:[self class] format:@"attrs sql: %@", attrsSql];
-        FMResultSet *frs = [self executeQueryThrows:attrsSql withArgumentsInArray:@[soupName] withDb:db];
-        if ([frs next]) {
-            NSMutableArray *soupFeatures = [[NSMutableArray alloc] init];
-            for (NSString *feature in [self registeredSoupFeaturesWithDb:db]) {
-                if ([frs intForColumn:feature] == kSoupFeatureEnabled) {
-                    [soupFeatures addObject:feature];
-                }
-            }
-            attrs = [SFSoupSpec newSoupSpec:soupName withFeatures:soupFeatures];
-            
-            // update the cache
-            [_attrSpecBySoup setObject:attrs forKey:soupName];
-        }
-        [frs close];
-    }
-    
-    if (!attrs) {
-        [SFSDKSmartStoreLogger d:[self class] format:@"no attributes for '%@'", soupName];
-    }
-    return attrs;
-}
-
 - (NSArray*)indicesForSoup:(NSString*)soupName {
     __block NSArray* result;
     [self inDatabase:^(FMDatabase * db) {
@@ -1330,7 +991,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     NSMutableArray *result = [_indexSpecsBySoup objectForKey:soupName];
     if (nil == result) {
         result = [NSMutableArray array];
-        
         //no cached indices ...reload from SOUP_INDEX_MAP_TABLE
         NSString *querySql = [NSString stringWithFormat:@"SELECT %@,%@,%@ FROM %@ WHERE %@ = ?",
                               PATH_COL, COLUMN_NAME_COL, COLUMN_TYPE_COL,
@@ -1384,53 +1044,21 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     }
 }
 
-- (NSString *)registerNewSoupWithSpec:(SFSoupSpec*)soupSpec withDb:(FMDatabase*) db {
-    NSMutableDictionary *soupMapValues = [[NSMutableDictionary alloc] initWithObjectsAndKeys:soupSpec.soupName, SOUP_NAME_COL, nil];
-    for (NSString *feature in [self registeredSoupFeaturesWithDb:db]) {
-        if ([soupSpec.features containsObject:feature]) {
-            soupMapValues[feature] = @(kSoupFeatureEnabled);
-        }
-    }
+- (NSString *)registerNewSoupWithName:(NSString*)soupName withDb:(FMDatabase*) db {
+    NSMutableDictionary *soupMapValues = [[NSMutableDictionary alloc] initWithObjectsAndKeys:soupName, SOUP_NAME_COL, nil];
     [self insertIntoTable:SOUP_ATTRS_TABLE values:soupMapValues withDb:db];
-
     // Get a safe table name for the soupName
     NSString *soupTableName = [self tableNameBySoupId:[db lastInsertRowId]];
     if (nil == soupTableName) {
-        [SFSDKSmartStoreLogger d:[self class] format:@"couldn't properly register soupName: '%@' ", soupSpec.soupName];
+        [SFSDKSmartStoreLogger d:[self class] format:@"couldn't properly register soupName: '%@' ", soupName];
     }
     return soupTableName;
 }
 
-// Attention, this only updates the metadata about the soup features
-// To actually perform features conversions, use alter soup.
-- (void)updateExistingSoupFeaturesWithSpec:(SFSoupSpec*)soupSpec withSoupTableName:(NSString*)soupTableName withDb:(FMDatabase*) db {
-    NSMutableDictionary *featuresMapValues = [[NSMutableDictionary alloc] initWithCapacity:soupSpec.features.count];
-    for (NSString *feature in [self registeredSoupFeaturesWithDb:db]) {
-        if ([soupSpec.features containsObject:feature]) {
-            featuresMapValues[feature] = @(kSoupFeatureEnabled);
-        } else {
-            featuresMapValues[feature] = @(kSoupFeatureDisabled);
-        }
-    }
-    
-    NSNumber *soupId = [self soupIdFromTableName:soupTableName];
-    [self updateTable:SOUP_ATTRS_TABLE values:featuresMapValues entryId:soupId idCol:ID_COL withDb:db];
-}
-
-- (BOOL)registerSoup:(NSString*)soupName withIndexSpecs:(NSArray*)indexSpecs {
-    return [self registerSoup:soupName withIndexSpecs:indexSpecs error:nil];
-}
-
 - (BOOL)registerSoup:(NSString*)soupName withIndexSpecs:(NSArray*)indexSpecs error:(NSError**)error {
-    SFSoupSpec *soupSpec = [SFSoupSpec newSoupSpec:soupName withFeatures:nil];
-    return [self registerSoupWithSpec:soupSpec withIndexSpecs:indexSpecs error:error];
-}
-
-- (BOOL)registerSoupWithSpec:(SFSoupSpec*)soupSpec withIndexSpecs:(NSArray*)indexSpecs error:(NSError**)error {
     NSError *localError = nil;
-    
     [self inTransaction:^(FMDatabase* db, BOOL* rollback) {
-        [self registerSoupWithSpec:soupSpec withIndexSpecs:indexSpecs withSoupTableName:nil withDb:db];
+        [self registerSoupWithName:soupName withIndexSpecs:indexSpecs withSoupTableName:nil withDb:db];
     } error:&localError];
     
     if (error) {
@@ -1443,11 +1071,11 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     return YES;
 }
 
-- (void)registerSoupWithSpec:(SFSoupSpec*)soupSpec withIndexSpecs:(NSArray*)indexSpecs withSoupTableName:(NSString*) soupTableName withDb:(FMDatabase*) db
+- (void)registerSoupWithName:(NSString*)soupName withIndexSpecs:(NSArray*)indexSpecs withSoupTableName:(NSString*) soupTableName withDb:(FMDatabase*) db
 {
     //verify soupName
-    if (!([soupSpec.soupName length] > 0)) {
-        @throw [NSException exceptionWithName:@"Bogus soupName" reason:soupSpec.soupName userInfo:nil];
+    if (!([soupName length] > 0)) {
+        @throw [NSException exceptionWithName:@"Bogus soupName" reason:soupName userInfo:nil];
     }
     //verify indexSpecs
     if (!([indexSpecs count] > 0)) {
@@ -1455,38 +1083,21 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     }
     
     // If soup with same name already exists, just return success.
-    if ([self soupExists:soupSpec.soupName withDb:db]) {
+    if ([self soupExists:soupName withDb:db]) {
         return;
     }
-
-    // Can't have JSON1 index specs in externally stored soup
-    BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
+    
     BOOL soupUsesJSON1 = [SFSoupIndex hasJSON1:indexSpecs];
-    if (soupUsesExternalStorage && soupUsesJSON1) {
-        @throw [NSException exceptionWithName:@"Can't have JSON1 index specs in externally stored soup" reason:nil userInfo:nil];
-    }
    
     if (nil == soupTableName) {
-        soupTableName = [self registerNewSoupWithSpec:soupSpec withDb:db];
-    } else {
-        // This is a re-registration case.
-        // Update soup features if necessary.
-        [self updateExistingSoupFeaturesWithSpec:soupSpec
-                               withSoupTableName:soupTableName
-                                          withDb:db];
-        [SFSDKSmartStoreLogger d:[self class] format:@"==== Creating %@ ('%@', features: '%@') ====",
-         soupTableName,
-         soupSpec.soupName,
-         soupSpec.features?:@[]];
+        soupTableName = [self registerNewSoupWithName:soupName withDb:db];
     }
     NSMutableArray *soupIndexMapInserts = [[NSMutableArray alloc] init ];
     NSMutableArray *createIndexStmts = [[NSMutableArray alloc] init ];
     NSMutableString *createTableStmt = [[NSMutableString alloc] init];
     [createTableStmt appendFormat:@"CREATE TABLE IF NOT EXISTS %@ (",soupTableName];
     [createTableStmt appendFormat:@"%@ INTEGER PRIMARY KEY AUTOINCREMENT",ID_COL];
-    if (!soupUsesExternalStorage) {
-        [createTableStmt appendFormat:@", %@ TEXT",SOUP_COL]; //this is the column where the raw json is stored
-    }
+    [createTableStmt appendFormat:@", %@ TEXT",SOUP_COL]; //this is the column where the raw json is stored
     [createTableStmt appendFormat:@", %@ INTEGER",CREATED_COL];
     [createTableStmt appendFormat:@", %@ INTEGER",LAST_MODIFIED_COL];
     
@@ -1506,7 +1117,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         // Column name or expression the db index is on
         NSString *columnName = [NSString stringWithFormat:@"%@_%lu",soupTableName,(unsigned long)i];
         if (kValueIndexedWithJSONExtract(indexSpec)) {
-            columnName = [NSString stringWithFormat:@"json_extract(soup, '$.%@')", indexSpec.path];
+            columnName = [NSString stringWithFormat:@"json_extract(soup, '$.%@')", [indexSpec.path stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
         }
         if (kValueExtractedToColumn(indexSpec)) {
             NSString * columnType = [indexSpec columnType];
@@ -1519,8 +1130,8 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         }
         
         // for inserting into meta mapping table
-        NSMutableDictionary *values = [[NSMutableDictionary alloc] init ];
-        values[SOUP_NAME_COL] = soupSpec.soupName;
+        NSMutableDictionary *values = [[NSMutableDictionary alloc] init];
+        values[SOUP_NAME_COL] = soupName;
         values[PATH_COL] = indexSpec.path;
         values[COLUMN_NAME_COL] = columnName;
         values[COLUMN_TYPE_COL] = indexSpec.indexType;
@@ -1559,24 +1170,12 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     if (soupUsesJSON1) {
         [features addObject:@"JSON1"];
     }
-    if (soupUsesExternalStorage) {
-        [features addObject:@"ExternalStorage"];
-    }
     if ([SFSoupIndex hasFts:indexSpecs]) {
         [features addObject:@"FTS"];
     }
     NSMutableDictionary *attributes = [[NSMutableDictionary alloc] init];
     attributes[@"features"] = features;
     [SFSDKEventBuilderHelper createAndStoreEvent:@"registerSoup" userAccount:self.user className:NSStringFromClass([self class]) attributes:attributes];
-
-    // if soup uses external storage, create the dir now
-    if (soupUsesExternalStorage) {
-        if (![self createExternalStorageDirectory:soupTableName]) {
-            @throw [NSException exceptionWithName:@"External storage soup dir creation error."
-                                           reason:nil
-                                         userInfo:nil];
-        }
-    }
 }
 
 - (void)removeSoup:(NSString*)soupName {
@@ -1590,10 +1189,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     NSString *soupTableName = [self tableNameForSoup:soupName withDb:db];
     if (nil == soupTableName)
         return;
-    // Get soup spec while it exists
-    SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
-    BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
-    
     NSString *dropSql = [NSString stringWithFormat:@"DROP TABLE IF EXISTS %@",soupTableName];
     [self executeUpdateThrows:dropSql withDb:db];
 
@@ -1602,7 +1197,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         NSString *dropFtsSql = [NSString stringWithFormat:@"DROP TABLE IF EXISTS %@_fts",soupTableName];
         [self executeUpdateThrows:dropFtsSql withDb:db];
     }
-    
+
     NSString *deleteIndexSql = [NSString stringWithFormat:@"DELETE FROM %@ WHERE %@=\"%@\"",
                                 SOUP_INDEX_MAP_TABLE, SOUP_NAME_COL, soupName];
     [self executeUpdateThrows:deleteIndexSql withDb:db];
@@ -1612,12 +1207,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     
     // Cleanup caches
     [self removeFromCache:soupName];
-    
-    // Cleanup external storage directory
-    if (soupUsesExternalStorage) {
-        [self deleteAllExternalEntries:soupTableName
-                             deleteDir:YES];
-    }
 }
 
 - (void)removeAllSoups
@@ -1628,7 +1217,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 }
 
 - (void)removeFromCache:(NSString*) soupName {
-    [_attrSpecBySoup removeObjectForKey:soupName ];
     [_indexSpecsBySoup removeObjectForKey:soupName ];
     [_soupNameToTableName removeObjectForKey:soupName ];
     [_smartSqlToSql removeEntriesForSoup:soupName ];
@@ -1752,9 +1340,21 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 
 - (NSArray *)queryWithQuerySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex error:(NSError **)error;
 {
+    return [self queryWithQuerySpec:querySpec pageIndex:pageIndex whereArgs:nil error:error];
+}
+
+- (NSArray *)queryWithQuerySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex whereArgs:(NSArray*)whereArgs error:(NSError **)error
+{
+    if (whereArgs != nil && querySpec.queryType != kSFSoupQueryTypeSmart) {
+        *error = [NSError errorWithDomain:kSFSmartStoreErrorDomain
+                                     code:kSFSmartStoreWhereArgsNotSupportedCode
+                                 userInfo:@{NSLocalizedDescriptionKey: kSFSmartStoreWhereArgsNotSupportedDescription}];
+        return nil;
+    }
+    
     __block NSMutableArray* resultArray = [NSMutableArray new];
     BOOL succ = [self inDatabase:^(FMDatabase* db) {
-        [self runQuery:resultArray resultString:nil querySpec:querySpec pageIndex:pageIndex withDb:db];
+        [self runQuery:resultArray resultString:nil querySpec:querySpec pageIndex:pageIndex whereArgs:whereArgs withDb:db];
     } error:error];
     if (succ) {
         return resultArray;
@@ -1766,11 +1366,11 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 - (BOOL) queryAsString:(NSMutableString*)resultString querySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex error:(NSError **)error NS_SWIFT_NAME(query(result:querySpec:pageIndex:))
 {
     return [self inDatabase:^(FMDatabase* db) {
-        [self runQuery:nil resultString:resultString querySpec:querySpec pageIndex:pageIndex withDb:db];
+        [self runQuery:nil resultString:resultString querySpec:querySpec pageIndex:pageIndex whereArgs:nil withDb:db];
     } error:error];
 }
 
-- (void)runQuery:(NSMutableArray*)resultArray resultString:(NSMutableString*)resultString querySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex withDb:(FMDatabase*)db
+- (void)runQuery:(NSMutableArray*)resultArray resultString:(NSMutableString*)resultString querySpec:(SFQuerySpec *)querySpec pageIndex:(NSUInteger)pageIndex whereArgs:(NSArray*)whereArgs withDb:(FMDatabase*)db
 {
     NSAssert(resultArray != nil ^ resultString != nil, @"resultArray or resultString must be non-nil, but not both at the same times.");
     BOOL computeResultAsString = resultString != nil;
@@ -1785,7 +1385,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     NSString* limitSql = [@[@"SELECT * FROM (", sql, @") LIMIT ", limit] componentsJoinedByString:@""];
     
     // Args
-    NSArray* args = [querySpec bindsForQuerySpec];
+    NSArray* args = querySpec.queryType != kSFSoupQueryTypeSmart ? [querySpec bindsForQuerySpec] : whereArgs;
     
     // Executing query
     FMResultSet *frs = [self executeQueryThrows:limitSql withArgumentsInArray:args withDb:db];
@@ -1817,12 +1417,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             if ([columnName isEqualToString:SOUP_COL]) {
                 rawJson = [frs stringForColumnIndex:0];
             }
-            else if ([columnName isEqualToString:kSoupFeatureExternalStorage]) {
-                NSString *tableName = [frs stringForColumnIndex:0];
-                NSNumber *soupEntryId = @([frs longForColumnIndex:1]);
-                rawJson = [self loadExternalSoupEntryAsString:soupEntryId soupTableName:tableName];
-            }
-            
             if (computeResultAsString) {
                 if (rawJson) {
                     [resultStrings addObject:rawJson];
@@ -1858,16 +1452,9 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             
             BOOL isSoupCol = [value isKindOfClass:[NSString class]] &&
             ([columnName isEqualToString:SOUP_COL] || [columnName hasPrefix:[NSString stringWithFormat:@"%@:", SOUP_COL]]);
-            BOOL isExternalSoupCol = [columnName isEqualToString:kSoupFeatureExternalStorage];
             
             // If this is a soup column then the value is a serialized json
-            if (isSoupCol || isExternalSoupCol) {
-                if (isExternalSoupCol) {
-                    // Reading the actual value from external storage
-                    NSNumber *soupEntryId = @([frs longForColumnIndex:++i]);
-                    value = [self loadExternalSoupEntryAsString:soupEntryId soupTableName:value];
-                }
-
+            if (isSoupCol) {
                 if (computeResultAsString) {
                     if (value) {
                         [resultStrings addObject:value];
@@ -2005,43 +1592,27 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         return result;
     }
     
-    SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
-    BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
-    if (soupUsesExternalStorage) {
-        for (NSNumber *soupEntryId in soupEntryIds) {
-            @autoreleasepool {
-                NSDictionary *entry = [self loadExternalSoupEntry:soupEntryId
-                                                    soupTableName:soupTableName];
-                if (entry) {
-                    [result addObject:entry];
-                }
-            }
+    NSString *pred = [self idsInPredicate:soupEntryIds idCol:ID_COL];
+    NSString *querySql = [NSString stringWithFormat:@"SELECT %@ FROM %@ WHERE %@",
+                          SOUP_COL,soupTableName,pred];
+    FMResultSet *frs = [self executeQueryThrows:querySql withDb:db];
+    while ([frs next]) {
+        @autoreleasepool {
+            NSString *rawJson = [frs stringForColumn:SOUP_COL];
+            //TODO this is pretty inefficient...we read json from db then reconvert to NSDictionary, then reconvert again in cordova
+            NSDictionary *entry = [SFJsonUtils objectFromJSONString:rawJson];
+            [result addObject:entry];
         }
     }
-    else {
-        NSString *pred = [self idsInPredicate:soupEntryIds idCol:ID_COL];
-        NSString *querySql = [NSString stringWithFormat:@"SELECT %@ FROM %@ WHERE %@",
-                              SOUP_COL,soupTableName,pred];
-        FMResultSet *frs = [self executeQueryThrows:querySql withDb:db];
-        while ([frs next]) {
-            @autoreleasepool {
-                NSString *rawJson = [frs stringForColumn:SOUP_COL];
-                //TODO this is pretty inefficient...we read json from db then reconvert to NSDictionary, then reconvert again in cordova
-                NSDictionary *entry = [SFJsonUtils objectFromJSONString:rawJson];
-                [result addObject:entry];
-            }
-        }
-        [frs close];
-    }
+    [frs close];
     
     return result;
 }
 
-- (NSDictionary *)insertOneEntry:(NSDictionary*)entry inSoupTable:(NSString*)soupTableName soupAttributes:(SFSoupSpec*)soupSpec indices:(NSArray*)indices withDb:(FMDatabase*) db
+- (NSDictionary *)insertOneEntry:(NSDictionary*)entry inSoupTable:(NSString*)soupTableName indices:(NSArray*)indices withDb:(FMDatabase*) db
 {
     NSNumber *nowVal = [self currentTimeInMilliseconds];
     NSNumber *newEntryId;
-    BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
     
     // Get next id
     FMResultSet *frs = [self executeQueryThrows:@"SELECT seq FROM SQLITE_SEQUENCE WHERE name = ?" withArgumentsInArray:@[soupTableName] withDb:db];
@@ -2063,27 +1634,13 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
                                    nowVal, CREATED_COL,
                                    nowVal, LAST_MODIFIED_COL,
                                    nil];
-    if (!soupUsesExternalStorage) {
-        //now update the SOUP_COL (raw json) for the soup entry
-        NSString *rawJson = [SFJsonUtils JSONRepresentation:mutableEntry];
-        values[SOUP_COL] = rawJson;
-    }
+    //now update the SOUP_COL (raw json) for the soup entry
+    NSString *rawJson = [SFJsonUtils JSONRepresentation:mutableEntry];
+    values[SOUP_COL] = rawJson;
     
     //build up the set of index column values for this new row
     [self projectIndexedPaths:entry values:values indices:indices typeFilter:kValueExtractedToColumn];
     [self insertIntoTable:soupTableName values:values withDb:db];
-    
-    // external storage
-    if (soupUsesExternalStorage) {
-        BOOL didSave = [self saveSoupEntryExternally:mutableEntry
-                                         soupEntryId:newEntryId
-                                       soupTableName:soupTableName];
-        if (!didSave) {
-            @throw [NSException exceptionWithName:@"Failed to save external soup file."
-                                           reason:nil
-                                         userInfo:nil];
-        }
-    }
 
     // fts
     if ([SFSoupIndex hasFts:indices]) {
@@ -2101,12 +1658,10 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 - (NSDictionary *)updateOneEntry:(NSDictionary *)entry
                      withEntryId:(NSNumber *)entryId
                      inSoupTable:(NSString *)soupTableName
-                  soupAttributes:(SFSoupSpec *)soupSpec
                          indices:(NSArray *)indices
                           withDb:(FMDatabase *) db
 {
     NSNumber *nowVal = [self currentTimeInMilliseconds];
-    BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
     NSMutableDictionary *values = [NSMutableDictionary dictionaryWithObjectsAndKeys:
                                     nowVal, LAST_MODIFIED_COL,
                                     nil];
@@ -2119,29 +1674,11 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     [mutableEntry setValue:nowVal forKey:SOUP_LAST_MODIFIED_DATE];
     [mutableEntry setValue:entryId forKey:SOUP_ENTRY_ID];
 
-    if (!soupUsesExternalStorage) {
-        NSString *rawJson = [SFJsonUtils JSONRepresentation:mutableEntry];
-        values[SOUP_COL] = rawJson;
-    }
+    NSString *rawJson = [SFJsonUtils JSONRepresentation:mutableEntry];
+    values[SOUP_COL] = rawJson;
 	
     [self updateTable:soupTableName values:values entryId:entryId idCol:ID_COL withDb:db];
     
-    // external storage:
-    // Update db first
-    // (If file save fails, db will be rolledback)
-    if (soupUsesExternalStorage) {
-        [self updateTable:soupTableName values:values entryId:entryId idCol:ID_COL withDb:db];
-        
-        BOOL didSave = [self saveSoupEntryExternally:mutableEntry
-                                         soupEntryId:entryId
-                                       soupTableName:soupTableName];
-        if (!didSave) {
-            @throw [NSException exceptionWithName:@"Failed to re-save external soup file."
-                                           reason:nil
-                                         userInfo:nil];
-        }
-    }
-
     // fts
     if ([SFSoupIndex hasFts:indices]) {
         NSMutableDictionary *ftsValues = [NSMutableDictionary new];
@@ -2165,7 +1702,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     // NB: We're assuming soupExists has already been validated on the soup name.  This happens
     // e.g. in upsertEntries:toSoup:withExternalIdPath: .
     NSString *soupTableName = [self tableNameForSoup:soupName withDb:db];
-    SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
     
     NSNumber *soupEntryId = nil;
     if (externalIdPath != nil) {
@@ -2204,14 +1740,12 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         result = [self updateOneEntry:entry
                           withEntryId:soupEntryId
                           inSoupTable:soupTableName
-                       soupAttributes:soupSpec
                               indices:indices
                                withDb:db];
     } else {
         //no entry id: insert
         result = [self insertOneEntry:entry
                           inSoupTable:soupTableName
-                       soupAttributes:soupSpec
                               indices:indices
                                withDb:db];
     }
@@ -2294,15 +1828,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             NSString *deleteFtsSql = [NSString stringWithFormat:@"DELETE FROM %@_fts WHERE %@", soupTableName, [self idsInPredicate:soupEntryIds idCol:ROWID_COL]];
             [self executeUpdateThrows:deleteFtsSql withDb:db];
         }
-
-        SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
-        BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
-        if (soupUsesExternalStorage) {
-            for (NSNumber *entryId in soupEntryIds) {
-                [self deleteExternalSoupEntry:entryId
-                                soupTableName:soupTableName];
-            }
-        }
     }
 }
 
@@ -2325,31 +1850,12 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     NSString* limitSql = [NSString stringWithFormat:@"SELECT * FROM (%@) LIMIT %lu", querySql, (unsigned long)querySpec.pageSize];
     NSArray* args = [querySpec bindsForQuerySpec];
     
-    // For soup using external storage, run query to get ids
-    NSMutableArray* ids = [NSMutableArray new];
-    SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
-    BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
-    if (soupUsesExternalStorage) {
-        FMResultSet* frs = [self executeQueryThrows:limitSql withArgumentsInArray:args withDb:db];
-        while ([frs next]) {
-            [ids addObject:@([frs longForColumnIndex:0])];
-        }
-    }
-    
     NSString *deleteSql = [NSString stringWithFormat:@"DELETE FROM %@ WHERE %@ in (%@)", soupTableName, ID_COL, limitSql];
     [self executeUpdateThrows:deleteSql withArgumentsInArray:args withDb:db];
     // fts
     if ([self hasFts:soupName withDb:db]) {
         NSString *deleteFtsSql = [NSString stringWithFormat:@"DELETE FROM %@_fts WHERE %@ in (%@)", soupTableName, ROWID_COL, querySql];
         [self executeUpdateThrows:deleteFtsSql withDb:db];
-    }
-
-    // External storage
-    if (soupUsesExternalStorage) {
-        for (NSNumber *entryId in ids) {
-            [self deleteExternalSoupEntry:entryId
-                            soupTableName:soupTableName];
-        }
     }
 }
 
@@ -2372,14 +1878,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             NSString *deleteFtsSql = [NSString stringWithFormat:@"DELETE FROM %@_fts", soupTableName];
             [self executeUpdateThrows:deleteFtsSql withDb:db];
         }
-
-        // Delete external files if necessary
-        SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
-        BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
-        if (soupUsesExternalStorage) {
-            [self deleteAllExternalEntries:soupTableName
-                                 deleteDir:NO];
-        }
     }
 }
 
@@ -2388,54 +1886,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     unsigned long long size = 0;
     NSString *dbPath = [self.dbMgr fullDbFilePathForStoreName:_storeName];
     size = [[[NSFileManager defaultManager] attributesOfItemAtPath:dbPath error:nil] fileSize];
-    
-    NSString *externalItemsPath = [self externalStorageRootDirectory];
-    NSArray *allExternalItems = [[NSFileManager defaultManager] subpathsOfDirectoryAtPath:externalItemsPath
-                                                                                    error:nil];
-    for (NSString *item in allExternalItems) {
-        NSString *fullItemPath = [externalItemsPath stringByAppendingPathComponent:item];
-        BOOL isDir = NO;
-        // Don't count directories
-        if ([[NSFileManager defaultManager] fileExistsAtPath:fullItemPath isDirectory:&isDir] && !isDir) {
-            size += [[[NSFileManager defaultManager] attributesOfItemAtPath:fullItemPath error:nil] fileSize];
-        }
-    }
     return size;
-}
-
-- (unsigned long long)getExternalFileStorageSizeForSoup:(NSString*)soupName {
-    __block unsigned long long size = 0;
-
-    [self inTransaction:^(FMDatabase* db, BOOL* rollback) {
-        NSString *soupTableName = [self tableNameForSoup:soupName withDb:db];
-        NSString *externalItemsPath = [self externalStorageSoupDirectory:soupTableName];
-        NSArray *allExternalItems = [[NSFileManager defaultManager] subpathsOfDirectoryAtPath:externalItemsPath
-                                                                                        error:nil];
-        for (NSString *item in allExternalItems) {
-            NSString *fullItemPath = [externalItemsPath stringByAppendingPathComponent:item];
-            BOOL isDir = NO;
-            // Don't count directories
-            if ([[NSFileManager defaultManager] fileExistsAtPath:fullItemPath isDirectory:&isDir] && !isDir) {
-                size += [[[NSFileManager defaultManager] attributesOfItemAtPath:fullItemPath error:nil] fileSize];
-            }
-        }
-    } error:nil];
-
-    return size;
-}
-
-- (NSUInteger)getExternalFilesCountForSoup:(NSString*)soupName {
-    __block NSUInteger count = 0;
-    
-    [self inTransaction:^(FMDatabase* db, BOOL* rollback) {
-        NSString *soupTableName = [self tableNameForSoup:soupName withDb:db];
-        NSString *externalItemsPath = [self externalStorageSoupDirectory:soupTableName];
-        NSArray *allExternalItems = [[NSFileManager defaultManager] subpathsOfDirectoryAtPath:externalItemsPath
-                                                                                        error:nil];
-        count = [allExternalItems count];
-    } error:nil];
-    
-    return count;
 }
 
 - (BOOL) alterSoup:(NSString*)soupName withIndexSpecs:(NSArray*)indexSpecs reIndexData:(BOOL)reIndexData
@@ -2443,21 +1894,6 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
     if ([self soupExists:soupName]) {
         SFAlterSoupLongOperation* operation = [[SFAlterSoupLongOperation alloc] initWithStore:self
                                                                                      soupName:soupName
-                                                                                newIndexSpecs:indexSpecs
-                                                                                  reIndexData:reIndexData];
-        [operation run];
-        return YES;
-    } else {
-        return NO;
-    }
-}
-
-- (BOOL) alterSoup:(NSString*)soupName withSoupSpec:(SFSoupSpec*)soupSpec withIndexSpecs:(NSArray*)indexSpecs reIndexData:(BOOL)reIndexData
-{
-    if ([self soupExists:soupName]) {
-        SFAlterSoupLongOperation* operation = [[SFAlterSoupLongOperation alloc] initWithStore:self
-                                                                                     soupName:soupName
-                                                                                  newSoupSpec:soupSpec
                                                                                 newIndexSpecs:indexSpecs
                                                                                   reIndexData:reIndexData];
         [operation run];
@@ -2483,9 +1919,7 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
         NSDictionary *mapIndexSpecs = [SFSoupIndex mapForSoupIndexes:[self indicesForSoup:soupName withDb:db]];
         NSMutableArray* indices = [NSMutableArray new];
 
-        SFSoupSpec *soupSpec = [self attributesForSoup:soupName withDb:db];
-        BOOL soupUsesExternalStorage = [soupSpec.features containsObject:kSoupFeatureExternalStorage];
-        NSArray *queryCols = soupUsesExternalStorage ? @[ID_COL] : @[ID_COL, SOUP_COL];
+        NSArray *queryCols = @[ID_COL, SOUP_COL];
 
         BOOL hasFts = NO;
         for (NSString* indexPath in  indexPaths) {
@@ -2503,14 +1937,8 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
             @autoreleasepool {
                 NSNumber *entryId = @([frs longForColumn:ID_COL]);
                 NSDictionary *entry;
-                if (soupUsesExternalStorage) {
-                    entry = [self loadExternalSoupEntry:entryId
-                                          soupTableName:soupTableName];
-                }
-                else {
-                    NSString *soupElt = [frs stringForColumn:SOUP_COL];
-                    entry = [SFJsonUtils objectFromJSONString:soupElt];
-                }
+                NSString *soupElt = [frs stringForColumn:SOUP_COL];
+                entry = [SFJsonUtils objectFromJSONString:soupElt];
                 
                 NSMutableDictionary *values = [NSMutableDictionary dictionary];
                 [self projectIndexedPaths:entry values:values indices:indices typeFilter:kValueExtractedToColumn];
@@ -2604,6 +2032,17 @@ NSUInteger CACHES_COUNT_LIMIT = 1024;
 - (NSString*) getSQLCipherVersion
 {
     return [[self queryPragma:@"cipher_version"] componentsJoinedByString:@""];
+}
+
+- (NSString*) getCipherProviderVersion
+{
+    return [[self queryPragma:@"cipher_provider_version"] componentsJoinedByString:@""];
+}
+
+- (BOOL) getCipherFIPSStatus
+{
+    NSString *cipherFIPSStatus = [[self queryPragma:@"cipher_fips_status"] componentsJoinedByString:@""];
+    return [cipherFIPSStatus isEqualToString:@"1"];
 }
 
 - (NSArray*) queryPragma:(NSString*) pragma

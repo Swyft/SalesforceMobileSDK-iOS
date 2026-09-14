@@ -126,11 +126,35 @@ NS_SWIFT_NAME(OAuthCredentials)
  */
 @property (nonatomic, readonly, nullable) NSString *accessToken;
 
+@property (nonatomic, readonly, nullable) NSString *lightningDomain;
+@property (nonatomic, readonly, nullable) NSString *lightningSid;
+@property (nonatomic, readonly, nullable) NSString *vfDomain;
+@property (nonatomic, readonly, nullable) NSString *vfSid;
+@property (nonatomic, readonly, nullable) NSString *contentDomain;
+@property (nonatomic, readonly, nullable) NSString *contentSid;
+@property (nonatomic, readonly, nullable) NSString *csrfToken;
+@property (nonatomic, readonly, nullable) NSString *cookieClientSrc;
+@property (nonatomic, readonly, nullable) NSString *cookieSidClient;
+@property (nonatomic, readonly, nullable) NSString *sidCookieName;
+@property (nonatomic, readonly, nullable) NSString *parentSid;
+@property (nonatomic, readonly, nullable) NSString *tokenFormat;
+
+/** Session ID to use as the main SID cookie.
+ Returns parentSid for JWT token format, accessToken otherwise.
+ */
+@property (nonatomic, readonly, nullable) NSString *mainSid;
+
+/** UI session ID returned by the token endpoint for DPoP token flows. */
+@property (nonatomic, readonly, nullable) NSString *uiSid;
+@property (nonatomic, readonly, nullable) NSString *tokenType;
+@property (nonatomic, readonly, nullable) NSString *beaconChildConsumerKey;
+@property (nonatomic, readonly, nullable) NSString *beaconChildConsumerSecret;
+
+
 /** A readonly convenience property returning the Salesforce Organization ID provided in the path component of the identityUrl.
  
  This property is available after authentication has successfully completed.
  
- @warning The setter for this property is exposed publicly only for unit tests. Client code should not set this property.
  @exception NSInternalInconsistencyException If accessed while the identifier property is `nil`.
  */
 @property (nonatomic, readonly, nullable) NSString *organizationId;
@@ -141,10 +165,23 @@ NS_SWIFT_NAME(OAuthCredentials)
  
  This is the URL that client requests should be made to after authentication completes.
  This property is set by the `SFOAuthCoordinator` after authentication has successfully completed.
- 
- @warning The setter for this property is exposed publicly only for unit tests. Client code should not set this property.
  */
 @property (nonatomic, readonly, nullable) NSURL *instanceUrl;
+
+/** The URL of the  SFAP  server instance for this session.
+ 
+ This is the URL that client SFAP requests should be made to after authentication completes.
+ This property is set by the `SFOAuthCoordinator` after authentication has successfully completed.
+ This URL is only defined when sfap_api scope is used.
+ */
+@property (nonatomic, readonly, nullable) NSURL *apiInstanceUrl;
+
+/** The OAuth scopes granted for this session.
+ 
+ This property contains the list of OAuth scopes that were granted during authentication.
+ This property is set by the `SFOAuthCoordinator` after authentication has successfully completed.
+ */
+@property (nonatomic, readonly, nullable) NSArray<NSString *> *scopes;
 
 /** The community ID the user choose to log into. This usually happens when the user
  logs into the app using a community-based login page
@@ -161,20 +198,25 @@ NS_SWIFT_NAME(OAuthCredentials)
 @property (nonatomic, readonly, nullable) NSURL *communityUrl;
 
 /** The timestamp when the session access token was issued.
- 
+
  This property is set by the `SFOAuthCoordinator` after authentication has successfully completed.
- 
- @warning The setter for this property is exposed publicly only for unit tests. Client code should not set this property.
  */
 @property (nonatomic, readonly, nullable) NSDate *issuedAt;
+
+/** The timestamp of the most recent refresh-token rotation observed for this credential.
+
+ Set by `SFOAuthSessionRefresher` when a token refresh returns a `refresh_token`
+ that differs from the previously-stored one. `nil` if no rotation has been observed
+ for this credential (or if this credential predates the field's introduction — older
+ archives decode this field as `nil`).
+ */
+@property (nonatomic, readonly, nullable) NSDate *lastTokenRotationDate;
 
 /** The identity URL for the user returned as part of a successful authentication response.
  The format of the URL is: _https://login.salesforce.com/ID/orgID/userID_ where orgId is the ID of the Salesforce organization 
  that the user belongs to, and userID is the Salesforce user ID.
  
  This property is set by the `SFOAuthCoordinator` after authentication has successfully completed.
- 
- @warning The setter for this property is exposed publicly only for unit tests. Client code should not set this property.
  */
 @property (nonatomic, readonly, nullable) NSURL *identityUrl;
 
@@ -186,8 +228,6 @@ NS_SWIFT_NAME(OAuthCredentials)
  component of the identityUrl.
  
  This property is available after authentication has successfully completed.
- 
- @warning The setter for this property is exposed publicly only for unit tests. Client code should not set this property.
  */
 @property (nonatomic, readonly, nullable) NSString *userId;
 
@@ -254,10 +294,14 @@ NS_SWIFT_NAME(OAuthCredentials)
  */
 - (void)revokeRefreshToken;
 
-
 - (NSURL *)overrideDomainIfNeeded;
 
 - (void)updateCredentials:(NSDictionary *)params;
+
+/** Returns the oauth client id to use for refresh
+ In the case of beacon app, the beacon child consumer key returned during login should be used instead of the configured consumer key
+ */
+- (NSString*)getClientIdForRefresh;
 
 @end
 

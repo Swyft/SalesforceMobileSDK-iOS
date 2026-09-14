@@ -23,6 +23,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -115,17 +116,6 @@ NS_SWIFT_NAME(AlterSoupLongOperation)
  @return The initialized self.
  */
 - (id) initWithStore:(SFSmartStore*)store soupName:(NSString*)soupName newIndexSpecs:(NSArray*)newIndexSpecs reIndexData:(BOOL)reIndexData;
-
-/**
- Initializer for starting the alter soup operation with a new soup spec.
- @param store SmartStore instance.
- @param soupName Soup name.
- @param newSoupSpec New soup spec.
- @param newIndexSpecs New index specs.
- @param reIndexData YES to reindex.
- @return The initialized self.
- */
-- (id) initWithStore:(SFSmartStore*)store soupName:(NSString*)soupName newSoupSpec:(nullable SFSoupSpec*)newSoupSpec newIndexSpecs:(NSArray*)newIndexSpecs reIndexData:(BOOL)reIndexData;
 
 /** 
  Initializer for resuming an alter soup operation from the data stored in the long operations status table.

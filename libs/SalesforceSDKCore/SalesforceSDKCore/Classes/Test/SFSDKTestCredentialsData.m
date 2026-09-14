@@ -63,6 +63,11 @@
     return _credentialsDict[@"instance_url"];
 }
 
+- (NSString *)apiInstanceUrl
+{
+    return _credentialsDict[@"api_instance_url"];
+}
+
 - (NSString *)clientId
 {
     return _credentialsDict[@"test_client_id"];
@@ -75,12 +80,25 @@
 
 - (NSString *)loginHost
 {
-    return _credentialsDict[@"test_login_domain"];
+    NSString *value = _credentialsDict[@"test_login_domain"];
+    if ([value hasPrefix:@"https://"]) return [value substringFromIndex:8];
+    if ([value hasPrefix:@"http://"]) return [value substringFromIndex:7];
+    return value;
 }
 
 - (NSString *)communityUrl
 {
     return _credentialsDict[@"community_url"];
+}
+
+- (NSString *)username
+{
+    return _credentialsDict[@"username"];
+}
+
+- (NSString *)displayName
+{
+    return _credentialsDict[@"display_name"];
 }
 
 @end

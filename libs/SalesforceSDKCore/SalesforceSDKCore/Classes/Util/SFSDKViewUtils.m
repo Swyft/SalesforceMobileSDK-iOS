@@ -27,32 +27,31 @@
  */
 #import "SFSDKViewUtils.h"
 #import "SFSDKViewControllerConfig.h"
+#import "UIColor+SFColors.h"
 
 @implementation SFSDKViewUtils
 
-+ (void)styleNavigationBar:(UINavigationBar *)navigationBar config:(SFSDKViewControllerConfig *) config {
++ (void)styleNavigationBar:(UINavigationBar *)navigationBar config:(SFSDKViewControllerConfig *)config classes:(NSArray<Class <UIAppearanceContainer>> *)classes {
 
     if (!navigationBar && !config) {
         return;
     }
     
+    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
+    [appearance configureWithOpaqueBackground];
+
     if (config.navBarColor) {
-        if (@available(iOS 13.0, *)) {
-            navigationBar.standardAppearance.backgroundColor = config.navBarColor;
-        } else {
-            UIImage *backgroundImage = [self headerBackgroundImage:config.navBarColor];
-            [navigationBar setBackgroundImage:backgroundImage forBarMetrics:UIBarMetricsDefault];
-        }
+        appearance.backgroundColor = config.navBarColor;
         navigationBar.backgroundColor = config.navBarColor;
     }
-    
+
     NSMutableDictionary *textAttributes = [[NSMutableDictionary alloc] init];
     if (config.navBarTintColor) {
         navigationBar.tintColor = config.navBarTintColor;
         [textAttributes setObject:config.navBarTintColor forKey:NSForegroundColorAttributeName];
     } else {
         // default color
-        navigationBar.tintColor = [UIColor whiteColor];
+        navigationBar.tintColor = [UIColor salesforceNavBarTintColor];
     }
     
     if (config.navBarTitleColor){
@@ -64,11 +63,14 @@
     }
     
     if ([textAttributes count] > 0) {
-        if (@available(iOS 13.0, *)) {
-            navigationBar.standardAppearance.titleTextAttributes = textAttributes;
-        }
+        appearance.titleTextAttributes = textAttributes;
         [navigationBar setTitleTextAttributes:textAttributes];
     }
+
+    [UINavigationBar appearanceWhenContainedInInstancesOfClasses:classes].standardAppearance = appearance;
+    [UINavigationBar appearanceWhenContainedInInstancesOfClasses:classes].compactAppearance = appearance;
+    [UINavigationBar appearanceWhenContainedInInstancesOfClasses:classes].scrollEdgeAppearance = appearance;
+    [UINavigationBar appearanceWhenContainedInInstancesOfClasses:classes].compactScrollEdgeAppearance = appearance;
 }
 
 + ( UIImage * _Nonnull )headerBackgroundImage:(UIColor *)color {

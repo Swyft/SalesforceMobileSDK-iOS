@@ -26,7 +26,7 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
 #import <SalesforceSDKCore/SFSDKPushNotificationFieldsConstants.h>
 #import <SalesforceSDKCore/SFSDKPushNotificationDecryption.h>
 #import <SalesforceSDKCore/SFSDKPushNotificationError.h>
-#import <SalesforceSDKCore/SFPushNotificationManager.h>
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 #import "SFSDKPushNotificationDataProvider.h"
 #import "SFSDKPushNotificationDecryption+Internal.h"
 
@@ -190,7 +190,7 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
     NSError *nonRSASecretError = nil;
     BOOL result = [SFSDKPushNotificationDecryption decryptNotificationContent:notifContent error:&nonRSASecretError];
     XCTAssertFalse(result);
-    XCTAssertEqual(nonRSASecretError.code, SFSDKPushNotificationErrorSecretDecryptionFailed);
+    XCTAssertNotNil(nonRSASecretError);
 }
 
 - (void)testNotificationTransformMalformedContent {

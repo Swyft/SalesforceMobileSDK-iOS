@@ -27,8 +27,8 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import "SFUserAccount.h"
-#import "SFSDKAnalyticsPublisher.h"
+#import <SalesforceSDKCore/SFUserAccount.h>
+#import <SalesforceSDKCore/SFSDKAnalyticsPublisher.h>
 #import <SalesforceAnalytics/SFSDKAnalyticsManager.h>
 #import <SalesforceAnalytics/SFSDKTransform.h>
 
@@ -45,6 +45,14 @@
  * of events is still possible.
  */
 @property (nonatomic, readwrite, assign, getter=isLoggingEnabled) BOOL loggingEnabled;
+
+/**
+ * Disables or enables batch processing of events.
+ *
+ * @discussion If batching is enabled, publishing of events will happen in smaller chunks
+ */
+@property (nonatomic, readwrite, assign, getter=isBatchingEnabled) BOOL batchingEnabled;
+
 
 /**
  * Returns an instance of this class associated with the specified user account.

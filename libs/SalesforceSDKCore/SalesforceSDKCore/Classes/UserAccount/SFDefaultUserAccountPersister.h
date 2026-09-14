@@ -23,8 +23,13 @@
  */
 
 #import <Foundation/Foundation.h>
+#import "SalesforceSDKConstants.h"
+#import "SFUserAccountManager+Internal.h"
 
 NS_ASSUME_NONNULL_BEGIN
+
+extern NSString * _Nonnull const kUserAccountEncryptionKeyLabel;
+extern NSString * _Nonnull const kUserAccountPlistFileName;
 
 @protocol SFUserAccountPersister;
 

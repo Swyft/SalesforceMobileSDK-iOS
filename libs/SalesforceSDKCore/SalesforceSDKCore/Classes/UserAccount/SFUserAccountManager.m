@@ -21,7 +21,9 @@
  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#import "SalesforceSDKManager+Internal.h"
 #import "SFUserAccountManager+Internal.h"
+#import "SFSDKWindowManager+Internal.h"
 #import "SFUserAccount+Internal.h"
 #import "SFIdentityData+Internal.h"
 #import "SFDefaultUserAccountPersister.h"
@@ -42,9 +44,7 @@
 #import "SFRestAPI+Blocks.h"
 #import "NSString+SFAdditions.h"
 #import "SFSDKAppFeatureMarkers.h"
-#import "SFSDKWebViewStateManager.h"
 #import "SFSDKWindowManager.h"
-#import "SFPushNotificationManager.h"
 #import "SFSDKAlertMessage.h"
 #import "SFSDKAlertView.h"
 #import "SFSDKAlertMessageBuilder.h"
@@ -54,9 +54,23 @@
 #import "SFSDKLoginHost.h"
 #import "SFSDKLoginHostStorage.h"
 #import "SFSDKEventBuilderHelper.h"
-#import "SFPasscodeManager.h"
 #import "SFNetwork.h"
 #import "SFSDKSalesforceAnalyticsManager.h"
+#import "SFApplicationHelper.h"
+#import "SFSDKTokenRefreshCoordinator.h"
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
+#import <SalesforceSDKCommon/SalesforceSDKCommon-Swift.h>
+#import "SFSDKSPLoginRequestCommand.h"
+#import "SFSDKSPLoginResponseCommand.h"
+#import "SFSDKCryptoUtils.h"
+#import "NSData+SFSDKUtils_Internal.h"
+#import "SFSDKIDPAuthHelper.h"
+#import "SFSDKIDPLoginRequestCommand.h"
+#import "SFSDKIDPAuthCodeLoginRequestCommand.h"
+#import <SalesforceSDKCommon/SFJsonUtils.h>
+#import "SFSDKOAuth2+Internal.h"
+#import "SFSDKResourceUtils.h"
+#import "SFSDKAuthConfigUtil.h"
 
 // Notifications
 NSNotificationName SFUserAccountManagerDidChangeUserNotification       = @"SFUserAccountManagerDidChangeUserNotification";
@@ -70,6 +84,7 @@ NSNotificationName kSFNotificationUserWillLogout = @"SFNotificationUserWillLogou
 NSNotificationName kSFNotificationUserDidLogout  = @"SFNotificationUserDidLogout";
 NSNotificationName kSFNotificationOrgDidLogout   = @"SFNotificationOrgDidLogout";
 NSNotificationName kSFNotificationUserDidRefreshToken   = @"SFNotificationOAuthUserDidRefreshToken";
+NSNotificationName kSFNotificationUserDidMigrateRefreshToken   = @"SFNotificationUserDidMigrateRefreshToken";
 
 NSNotificationName kSFNotificationUserWillSwitch  = @"SFNotificationUserWillSwitch";
 NSNotificationName kSFNotificationUserDidSwitch   = @"SFNotificationUserDidSwitch";
@@ -86,34 +101,35 @@ NSNotificationName kSFNotificationUserDidReceiveIDPResponse   = @"SFNotification
 NSNotificationName kSFNotificationUserIDPInitDidLogIn       = @"SFNotificationUserIDPInitDidLogIn";
 
 //keys used in notifications
-NSString * const kSFNotificationUserInfoAccountKey      = @"account";
-NSString * const kSFNotificationUserInfoCredentialsKey  = @"credentials";
-NSString * const kSFNotificationUserInfoAuthTypeKey     = @"authType";
-NSString * const kSFNotificationPreviousLoginHost     = @"prevLoginHost";
-NSString * const kSFNotificationCurrentLoginHost     = @"currentLoginHost";
-NSString * const kSFUserInfoAddlOptionsKey     = @"options";
-NSString * const kSFNotificationUserInfoKey    = @"sfuserInfo";
-NSString * const kSFNotificationFromUserKey    = @"fromUser";
-NSString * const kSFNotificationToUserKey      = @"toUser";
-NSString * const SFUserAccountManagerUserChangeKey      = @"change";
-NSString * const SFUserAccountManagerUserChangeUserKey      = @"user";
+NSString * const kSFNotificationUserInfoAccountKey           = @"account";
+NSString * const kSFNotificationUserInfoLogoutReasonKey      = @"logoutReason";
+NSString * const kSFNotificationUserInfoCredentialsKey       = @"credentials";
+NSString * const kSFNotificationUserInfoAuthTypeKey          = @"authType";
+NSString * const kSFNotificationPreviousLoginHost            = @"prevLoginHost";
+NSString * const kSFNotificationCurrentLoginHost             = @"currentLoginHost";
+NSString * const kSFUserInfoAddlOptionsKey                   = @"options";
+NSString * const kSFNotificationUserInfoKey                  = @"sfuserInfo";
+NSString * const kSFNotificationFromUserKey                  = @"fromUser";
+NSString * const kSFNotificationToUserKey                    = @"toUser";
+NSString * const SFUserAccountManagerUserChangeKey           = @"change";
+NSString * const SFUserAccountManagerUserChangeUserKey       = @"user";
 
 // Persistence Keys
 static NSString * const kUserDefaultsLastUserIdentityKey = @"LastUserIdentity";
 static NSString * const kUserDefaultsLastUserCommunityIdKey = @"LastUserCommunityId";
-static NSString * const kSFAppFeatureMultiUser   = @"MU";
 static NSString * const kAlertErrorTitleKey = @"authAlertErrorTitle";
 static NSString * const kAlertOkButtonKey = @"authAlertOkButton";
 static NSString * const kAlertRetryButtonKey = @"authAlertRetryButton";
 static NSString * const kAlertDismissButtonKey = @"authAlertDismissButton";
 static NSString * const kAlertConnectionErrorFormatStringKey = @"authAlertConnectionErrorFormatString";
 static NSString * const kAlertVersionMismatchErrorKey = @"authAlertVersionMismatchError";
-static NSString *const kErroredClientKey = @"SFErroredOAuthClientKey";
-static NSString * const kSFSPAppFeatureIDPLogin   = @"SP";
-static NSString * const kSFIDPAppFeatureIDPLogin   = @"IP";
-static NSString *const  kOptionsClientKey          = @"clientIdentifier";
+static NSString * const kErroredClientKey = @"SFErroredOAuthClientKey";
+static NSString * const kOptionsClientKey          = @"clientIdentifier";
 
 NSString * const kSFSDKUserAccountManagerErrorDomain = @"com.salesforce.mobilesdk.SFUserAccountManager";
+NSString * const kSFIDPSceneIdKey = @"sceneIdentifier";
+NSString * const kBiometricAuthenticationPolicyKey = @"ENABLE_BIOMETRIC_AUTHENTICATION";
+NSString * const kBiometricAuthenticationTimeoutKey = @"BIOMETRIC_AUTHENTICATION_TIMEOUT";
 
 static NSString * const kSFInvalidCredentialsAuthErrorHandler = @"InvalidCredentialsErrorHandler";
 static NSString * const kSFConnectedAppVersionAuthErrorHandler = @"ConnectedAppVersionErrorHandler";
@@ -141,7 +157,6 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 @synthesize userAccountMap = _userAccountMap;
 @synthesize accountPersister = _accountPersister;
 @synthesize loginViewControllerConfig = _loginViewControllerConfig;
-@synthesize appLockViewControllerConfig = _appLockViewControllerConfig;
 
 + (instancetype)sharedInstance {
     static dispatch_once_t pred;
@@ -166,6 +181,8 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         _accountsLock = [NSRecursiveLock new];
         _authPreferences = [SFSDKAuthPreferences  new];
         _errorManager = [[SFSDKAuthErrorManager alloc] init];
+        _shouldFallbackToWebAuthentication = NO;
+        _showAuthWindowWhileLoading = YES;
         __weak typeof (self) weakSelf = self;
         self.alertDisplayBlock = ^(SFSDKAlertMessage * message, SFSDKWindowContainer *window) {
             __strong typeof (weakSelf) strongSelf = weakSelf;
@@ -183,7 +200,9 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         };
         
        _idpUserSelectionAction = ^UIViewController<SFSDKUserSelectionView> * _Nonnull{
+            SFSDK_USE_DEPRECATED_BEGIN
             SFSDKUserSelectionNavViewController *controller = [[SFSDKUserSelectionNavViewController alloc] init];
+            SFSDK_USE_DEPRECATED_END
             controller.userSelectionDelegate = [SFUserAccountManager sharedInstance];
             return controller;
         };
@@ -203,6 +222,8 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
             [strongSelf dismissAuthViewControllerIfPresent];
         }];
         
+        _authSessions = [SFSDKSafeMutableDictionary new];
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sceneDidDisconnect:) name:UISceneDidDisconnectNotification object:nil];
         [self populateErrorHandlers];
      }
 	return self;
@@ -252,6 +273,8 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     self.authPreferences.oauthClientId = newClientId;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (BOOL)isIdentityProvider {
     return self.authPreferences.isIdentityProvider;
 }
@@ -264,8 +287,16 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
     self.authPreferences.isIdentityProvider = isIdentityProvider;
 }
+#pragma clang diagnostic pop
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (BOOL)idpEnabled {
+    return self.authPreferences.idpEnabled;
+}
+#pragma clang diagnostic pop
+
+- (BOOL)sdk_idpEnabled {
     return self.authPreferences.idpEnabled;
 }
 
@@ -277,7 +308,14 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     self.authPreferences.appDisplayName = appDisplayName;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (NSString *)idpAppURIScheme {
+    return self.authPreferences.idpAppURIScheme;
+}
+#pragma clang diagnostic pop
+
+- (NSString *)sdk_idpAppURIScheme {
     return self.authPreferences.idpAppURIScheme;
 }
 
@@ -289,14 +327,17 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
      self.authPreferences.requireBrowserAuthentication = useBrowserAuth;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (void)setIdpAppURIScheme:(NSString *)idpAppURIScheme {
-    if (idpAppURIScheme && [idpAppURIScheme trim].length > 0) {
+    if (idpAppURIScheme && [idpAppURIScheme sfsdk_trim].length > 0) {
         [SFSDKAppFeatureMarkers registerAppFeature:kSFSPAppFeatureIDPLogin];
     } else {
         [SFSDKAppFeatureMarkers unregisterAppFeature:kSFSPAppFeatureIDPLogin];
     }
     self.authPreferences.idpAppURIScheme = idpAppURIScheme;
 }
+#pragma clang diagnostic pop
 
 - (SFSDKLoginViewControllerConfig *) loginViewControllerConfig {
     if (!_loginViewControllerConfig) {
@@ -311,76 +352,162 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
 }
 
-- (SFSDKAppLockViewConfig *) appLockViewControllerConfig {
-    if (!_appLockViewControllerConfig) {
-        _appLockViewControllerConfig = [SFSDKAppLockViewConfig createDefaultConfig];
-    }
-    return _appLockViewControllerConfig;
-}
-
-- (void) setAppLockViewControllerConfig:(SFSDKAppLockViewConfig *)config {
-    if (_appLockViewControllerConfig != config) {
-        _appLockViewControllerConfig = config;
-        [SFSecurityLockout setPasscodeViewConfig:config];
-    }
-}
-
-
 #pragma  mark - login & logout
 
-- (BOOL)handleIDPAuthenticationResponse:(NSURL *)appUrlResponse options:(nonnull NSDictionary *)options {
-    [SFSDKCoreLogger d:[self class] format:@"handleIDPAuthenticationResponse %@",[appUrlResponse description]];
-    BOOL result = [[SFSDKURLHandlerManager sharedInstance] canHandleRequest:appUrlResponse options:options];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+- (BOOL)handleIDPAuthenticationResponse:(NSURL *)appUrlResponse options:(NSDictionary *)options {
+    return [self handleIDPAuthenticationCommand:appUrlResponse options:options completion:nil failure:nil];
+}
+
+- (BOOL)handleIDPAuthenticationCommand:(NSURL *)url
+                               options:(nonnull NSDictionary *)options
+                            completion:(nullable SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                               failure:(nullable SFUserAccountManagerFailureCallbackBlock)failureBlock {
+    [SFSDKCoreLogger d:[self class] format:@"handleIDPAuthenticationResponse %@", [url description]];
+    BOOL result = [[SFSDKURLHandlerManager sharedInstance] canHandleRequest:url options:options];
     if (result) {
-        result = [[SFSDKURLHandlerManager sharedInstance] processRequest:appUrlResponse  options:options];
+        result = [[SFSDKURLHandlerManager sharedInstance] processRequest:url options:options completion:completionBlock failure:failureBlock];
     }
     return result;
 }
 
+- (void)kickOffIDPInitiatedLoginFlowForSP:(SFSDKSPConfig *)config statusUpdate:(void(^)(SFSPLoginStatus))statusBlock failure:(void(^)(SFSPLoginError))failureBlock {
+    NSString *scheme = [NSURL URLWithString:[config oauthCallbackURL]].scheme;
+    if (!scheme) {
+        failureBlock(SFSPLoginErrorNoScheme);
+        return;
+    }
+
+    NSString *accountIdentifier = [self encodeUserIdentity:[self currentUser].accountIdentity];
+    if (!accountIdentifier) {
+        failureBlock(SFSPLoginErrorNoScheme);
+        return;
+    }
+    NSString *keychainGroup = [config keychainGroup];
+
+    NSString *keyIdentifier = [NSString stringWithFormat:@"com.salesforce.idp.codeverifier-%@", scheme];
+    NSData *codeVerifier = [SFSDKCryptoUtils randomByteDataWithLength:kSFVerifierByteLength];
+    SFSDKKeychainResult *result = [SFSDKKeychainHelper writeWithService:keyIdentifier data:codeVerifier account:nil accessGroup:keychainGroup cacheMode:CacheModeDisabled];
+    if (result.success) {
+        statusBlock(SFSPLoginStatusCodeVerifierStoredInKeychain);
+    } else {
+        failureBlock(SFSPLoginErrorKeychainWriteFailed);
+        return;
+    }
+
+    NSString *challengeString = [[[codeVerifier sfsdk_base64UrlString] sfsdk_sha256] sfsdk_base64UrlString];
+    NSDictionary *appContext = @{
+        kSFOAuthClientIdParam: [config oauthClientId],
+        kSFOAuthRedirectUrlParam: [config oauthCallbackURL],
+        kSFChallengeParamName: challengeString,
+        kSFLoginHostParam: self.currentUser.credentials.domain,
+        kSFScopesParam: [SFSDKIDPAuthHelper encodeScopes:[config oauthScopes]],
+    };
+
+    SFSDKAuthRequest *request = [self defaultAuthRequest];
+    request.keychainReference = keyIdentifier;
+    request.keychainGroup = config.keychainGroup;
+    SFOAuthCredentials *spAppCredentials = [self spAppCredentials:appContext];
+    [self authenticateOnBehalfOfSPApp:[self currentUser] spAppCredentials:spAppCredentials authRequest:request success:^{
+        statusBlock(SFSPLoginStatusGettingAuthCodeFromServer);
+    } failure:^(NSError *error) {
+        failureBlock(SFSPLoginErrorCredentialRefreshFailed);
+    }];
+}
+#pragma clang diagnostic pop
+
 - (BOOL)loginWithCompletion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
-    return [self authenticateWithCompletion:completionBlock failure:failureBlock];
+    // -[UIApplication connectedScenes] is a main-thread-only UIKit API. This entry point can be
+    // reached on a background thread (e.g. a REST request that triggers login from a background
+    // queue), so marshal to the main thread to avoid unsafe UIKit access and Main Thread Checker
+    // warnings. dispatch_sync preserves the synchronous BOOL return that callers rely on.
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            result = [self loginWithCompletion:completionBlock failure:failureBlock];
+        });
+        return result;
+    }
+    BOOL result = NO;
+    for (UIScene *scene in [SFApplicationHelper sharedApplication].connectedScenes) {
+        result |= [self loginWithCompletion:completionBlock failure:failureBlock scene:scene];
+    }
+    return result;
+}
+
+- (BOOL)loginWithCompletion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock
+                      scene:(UIScene *)scene
+{
+    return [self loginWithCompletion:completionBlock
+                             failure:failureBlock
+                               scene:scene
+                           loginHint:nil
+                           loginHost:nil
+                  frontDoorBridgeUrl:nil
+                        codeVerifier:nil];
+}
+
+- (BOOL)loginWithCompletion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock
+                      scene:(UIScene *)scene
+                  loginHint:(nullable NSString *)loginHint
+                  loginHost:(nullable NSString *)loginHost
+         frontDoorBridgeUrl:(nullable NSURL * )frontDoorBridgeUrl
+               codeVerifier:(nullable NSString *)codeVerifier
+{
+    return [self authenticateWithCompletion:completionBlock
+                                    failure:failureBlock
+                                      scene:scene
+                                  loginHint:loginHint
+                                  loginHost:loginHost
+                         frontDoorBridgeUrl:frontDoorBridgeUrl
+                               codeVerifier:codeVerifier];
 }
 
 - (BOOL)refreshCredentials:(SFOAuthCredentials *)credentials completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
     NSAssert(credentials.refreshToken.length > 0, @"Refresh token required to refresh credentials.");
-    
-    SFSDKOAuthTokenEndpointRequest *request = [[SFSDKOAuthTokenEndpointRequest alloc] init];
-    request.additionalOAuthParameterKeys = self.additionalOAuthParameterKeys;
-    request.additionalTokenRefreshParams = self.additionalTokenRefreshParams;
-    request.clientID = credentials.clientId;
-    request.refreshToken = credentials.refreshToken;
-    request.redirectURI = credentials.redirectUri;
-    request.serverURL = [credentials overrideDomainIfNeeded];
-    
+
     __weak typeof(self) weakSelf = self;
-    id<SFSDKOAuthProtocol> authClient = self.authClient();
-    [authClient accessTokenForRefresh:request completion:^(SFSDKOAuthTokenEndpointResponse * response) {
-        __strong typeof (weakSelf) strongSelf = weakSelf;
+    [[SFSDKTokenRefreshCoordinator sharedInstance] refreshSessionForCredentials:credentials completion:^(SFOAuthCredentials *updatedCredentials) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
         SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefresh];
-        if (response.hasError) {
-            if (failureBlock) {
-                failureBlock(authInfo,response.error.error);
-            }
-        } else {
-            [credentials updateCredentials:[response asDictionary]];
-            if (response.additionalOAuthFields)
-                credentials.additionalOAuthFields = response.additionalOAuthFields;
-            SFUserAccount *userAccount = [strongSelf accountForCredentials:credentials];
-            if (!userAccount) {
-                 userAccount = [self applyCredentials:credentials];
-            }
-            [self retrieveUserPhotoIfNeeded:userAccount];
-            NSDictionary *userInfo = @{kSFNotificationUserInfoAccountKey: userAccount,
-                                       kSFNotificationUserInfoAuthTypeKey: authInfo};
-            [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserDidRefreshToken
-                                                                object:strongSelf
-                                                              userInfo:userInfo];
-            if (completionBlock) {
-                completionBlock(authInfo,userAccount);
-            }
+        SFUserAccount *userAccount = [strongSelf accountForCredentials:updatedCredentials];
+        if (!userAccount) {
+            userAccount = [strongSelf applyCredentials:updatedCredentials];
+        }
+        [strongSelf retrieveUserPhotoIfNeeded:userAccount];
+        if (completionBlock) {
+            completionBlock(authInfo, userAccount);
+        }
+    } error:^(NSError *error) {
+        SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefresh];
+        if (failureBlock) {
+            failureBlock(authInfo, error);
         }
     }];
     return YES;
+}
+
+// Fires the held browser-launch callback of the attempt that willBeginBrowserAuthentication:
+// suppressed for the biometric prompt, resuming Advanced Auth on the same session without tearing
+// down the covering auth window. Falls back to a fresh login if the callback is gone.
+- (void)resumeBrowserAuthentication:(UIScene *)scene {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self resumeBrowserAuthentication:scene];
+        });
+        return;
+    }
+    SFSDKAuthSession *authSession = self.authSessions[scene.session.persistentIdentifier];
+    void (^browserBlock)(BOOL) = authSession.authCoordinatorBrowserBlock;
+    if (browserBlock) {
+        browserBlock(YES);
+    } else {
+        [self stopCurrentAuthentication:nil];
+        [self loginWithCompletion:^(SFOAuthInfo *authInfo, SFUserAccount *user) { } failure:^(SFOAuthInfo *authInfo, NSError *error) { }];
+    }
 }
 
 - (void)stopCurrentAuthentication:(void (^)(BOOL))completionBlock {
@@ -391,38 +518,97 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         return;
     }
     BOOL result = NO;
-    if (self.authSession && self.authSession.isAuthenticating) {
-        [self resetAuthentication];
-        result = YES;
-    } else {
-        [SFSDKCoreLogger e:[self class] format:@"Authentication has already been stopped."];
+    for (NSString *sceneId in self.authSessions.allKeys) {
+        SFSDKAuthSession *authSession = self.authSessions[sceneId];
+        if (authSession.isAuthenticating) {
+            result = YES;
+            [self dismissAuthViewControllerIfPresentForScene:authSession.oauthRequest.scene completion:nil];
+        }
     }
     
-    if (completionBlock) {
-        [self dismissAuthViewControllerIfPresent:^{
-            completionBlock(result);
-        }];
+    [self resetAuthentication];
+    
+    if (!result) {
+        [SFSDKCoreLogger e:[self class] format:@"Authentication has already been stopped."];
     }
-  
+
+    if (completionBlock) {
+        completionBlock(result);
+    }
 }
 
-- (BOOL)authenticateWithCompletion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
-    if (_authSession && _authSession.isAuthenticating) {
-        [SFSDKCoreLogger e:[self class] format:@"Login has already been called. Stop current authentication using SFUserAccountmanger::stopAuthentication and then retry."];
+- (BOOL)authenticateWithCompletion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                           failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock
+                             scene:(UIScene *)scene
+{
+    return [self authenticateWithCompletion:completionBlock
+                                    failure:failureBlock
+                                      scene:scene
+                                  loginHint:nil
+                                  loginHost:nil
+                         frontDoorBridgeUrl:nil
+                               codeVerifier:nil];
+}
+
+- (BOOL)authenticateWithCompletion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                           failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock
+                             scene:(UIScene *)scene
+                         loginHint:(nullable NSString *)loginHint
+                         loginHost:(nullable NSString *)loginHost
+                frontDoorBridgeUrl:(NSURL * )frontDoorBridgeUrl
+                      codeVerifier:(NSString *)codeVerifier
+{
+    // -[UIScene session] (below) is a main-thread-only UIKit API, and this is the common
+    // chokepoint for the scene-based login paths (loginWithCompletion:...). Marshal to the main
+    // thread when invoked from a background thread so scene access and the auth UI it drives run
+    // on the main thread. (loginWithJwtToken: and SP-app authentication call authenticateWithRequest:
+    // directly and do not pass through here.)
+    // dispatch_sync preserves the synchronous BOOL return that callers (e.g. SFSDKAuthHelper) rely on.
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            result = [self authenticateWithCompletion:completionBlock
+                                              failure:failureBlock
+                                                scene:scene
+                                            loginHint:loginHint
+                                            loginHost:loginHost
+                                   frontDoorBridgeUrl:frontDoorBridgeUrl
+                                         codeVerifier:codeVerifier];
+        });
+        return result;
+    }
+    SFSDKAuthSession *authSession = self.authSessions[scene.session.persistentIdentifier];
+    if (authSession && authSession.isAuthenticating) {
+        [SFSDKCoreLogger e:[self class] format:@"Login has already been called. Stop current authentication using SFUserAccountManager::stopCurrentAuthentication and then retry."];
         return NO;
     }
-    SFSDKAuthRequest *request = [self defaultAuthRequest];
-    if (request.ipdEnabled) {
+    
+    SFSDKAuthRequest *request;
+    if (self.nativeLoginEnabled && !self.shouldFallbackToWebAuthentication) {
+        request = [self nativeLoginAuthRequest];
+    } else {
+        request = [self defaultAuthRequestWithLoginHost:loginHost];
+    }
+    
+    if (scene) {
+        request.scene = scene;
+    }
+
+    if (request.idpEnabled) {
        return [self authenticateUsingIDP:request completion:completionBlock failure:failureBlock];
     }
-    return [self authenticateWithRequest:request completion:completionBlock failure:failureBlock];
+    return [self authenticateWithRequest:request
+                               loginHint:loginHint
+                              completion:completionBlock
+                                 failure:failureBlock
+                      frontDoorBridgeUrl:frontDoorBridgeUrl
+                            codeVerifier:codeVerifier];
 }
 
--(SFSDKAuthRequest *)defaultAuthRequest {
+-(SFSDKAuthRequest *)defaultAuthRequestWithLoginHost:(nullable NSString *)loginHost {
     SFSDKAuthRequest *request = [[SFSDKAuthRequest alloc] init];
-    request.loginHost = self.loginHost;
+    request.loginHost = loginHost != nil ? loginHost : self.loginHost;
     request.additionalOAuthParameterKeys = self.additionalOAuthParameterKeys;
-    request.appLockViewControllerConfig = self.appLockViewControllerConfig;
     request.loginViewControllerConfig = self.loginViewControllerConfig;
     request.brandLoginPath = self.brandLoginPath;
     request.oauthClientId = self.oauthClientId;
@@ -430,51 +616,136 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     request.scopes = self.scopes;
     request.retryLoginAfterFailure = self.retryLoginAfterFailure;
     request.useBrowserAuth = self.useBrowserAuth;
+    SFSDK_USE_DEPRECATED_BEGIN
     request.spAppLoginFlowSelectionAction = self.idpLoginFlowSelectionAction;
-    request.idpAppURIScheme = self.idpAppURIScheme;
+    SFSDK_USE_DEPRECATED_END
+    request.idpAppURIScheme = self.sdk_idpAppURIScheme;
+    request.scene = [[SFSDKWindowManager sharedManager] defaultScene];
     return request;
 }
 
-- (BOOL)authenticateWithRequest:(SFSDKAuthRequest *)request completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
+-(SFSDKAuthRequest *)defaultAuthRequest {
+    return [self defaultAuthRequestWithLoginHost:nil];
+}
+
+-(SFSDKAuthRequest *)migrateRefreshAuthRequest:(SFSDKAppConfig *)newAppConfig {
+    SFSDKAuthRequest *request = [[SFSDKAuthRequest alloc] init];
+    request.loginHost = self.loginHost;
+    request.additionalOAuthParameterKeys = self.additionalOAuthParameterKeys;
+    request.oauthClientId = newAppConfig.remoteAccessConsumerKey;
+    request.oauthCompletionUrl = newAppConfig.oauthRedirectURI;
+    request.scopes = newAppConfig.oauthScopes;
+    request.scene = [[SFSDKWindowManager sharedManager] defaultScene];
+    return request;
+}
+
+-(SFSDKAuthRequest *)nativeLoginAuthRequest {
+    SFNativeLoginManagerInternal *nativeLoginManager = (SFNativeLoginManagerInternal *)[[SalesforceSDKManager sharedManager] nativeLoginManager];
+    SFSDKAuthRequest *request = [[SFSDKAuthRequest alloc] init];
+    request.loginHost = nativeLoginManager.loginUrl;
+    request.additionalOAuthParameterKeys = self.additionalOAuthParameterKeys;
+    request.oauthClientId = nativeLoginManager.clientId;
+    request.oauthCompletionUrl = nativeLoginManager.redirectUri;
+    request.scene = [[SFSDKWindowManager sharedManager] defaultScene];
+    return request;
+}
+
+- (BOOL)authenticateWithRequest:(SFSDKAuthRequest *)request
+                      loginHint:(nullable NSString *)loginHint
+                     completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                        failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock
+             frontDoorBridgeUrl:(NSURL * )frontDoorBridgeUrl
+                   codeVerifier:(NSString *)codeVerifier
+{
     SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
     authSession.isAuthenticating = YES;
     authSession.authFailureCallback = failureBlock;
     authSession.authSuccessCallback = completionBlock;
     authSession.oauthCoordinator.delegate = self;
-    self.authSession = authSession;
+
+    // Only allow use of front door bridge URLs with matching consumer keys.
+    if (frontDoorBridgeUrl != nil) {
+        authSession.oauthCoordinator.frontdoorBridgeLoginOverride = [[SFSDKAuthCoordinatorFrontdoorBridgeLoginOverride alloc]
+                                                        initWithFrontdoorBridgeUrl:frontDoorBridgeUrl
+                                                        codeVerifier:codeVerifier];
+    }
+    // Login for Admin: when the request carries a My Domain override (set by
+    // loginViewControllerDidSelectLoginForAdmin: in phase-2 Welcome Discovery),
+    // route the browser session to the resolved My Domain and forward the
+    // captured login hint, while leaving request.loginHost — and therefore
+    // every other restart path — pointed at the originally configured host.
+    BOOL useLfaOverride = request.loginAsAdmin && request.loginAsAdminMyDomain.length > 0;
+    if (useLfaOverride) {
+        authSession.credentials.domain = request.loginAsAdminMyDomain;
+        authSession.oauthCoordinator.loginHint = request.loginAsAdminLoginHint;
+    } else {
+        authSession.oauthCoordinator.loginHint = loginHint;
+    }
+    NSString *appConfigLoginHost = useLfaOverride ? request.loginAsAdminMyDomain : request.loginHost;
+    NSString *sceneId = authSession.sceneId;
+    self.authSessions[sceneId] = authSession;
+
+    if (self.nativeLoginEnabled && !self.shouldFallbackToWebAuthentication) {
+        authSession.oauthCoordinator.useNativeAuth = YES;
+    }
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        [SFSDKWebViewStateManager removeSession];
-        [authSession.oauthCoordinator authenticate];
+        [SFSDKWebViewStateManager removeSessionForcefullyWithCompletionHandler:^{
+            // Get app config for the login host. If appConfigRuntimeSelectorBlock is set,
+            // it will be invoked to select the appropriate config. Otherwise, returns the default appConfig.
+            [[SalesforceSDKManager sharedManager] appConfigForLoginHost:appConfigLoginHost callback:^(SFSDKAppConfig* appConfig) {
+                authSession.credentials.clientId = appConfig.remoteAccessConsumerKey;
+                authSession.credentials.redirectUri = appConfig.oauthRedirectURI;
+                authSession.credentials.scopes = [appConfig.oauthScopes allObjects];
+                [authSession.oauthCoordinator authenticateWithCredentials:authSession.credentials];
+            }];
+        }];
+
     });
-    return self.authSession.isAuthenticating;
+    return self.authSessions[sceneId].isAuthenticating;
 }
 
 - (BOOL)authenticateWithRequestOnBehalfOfSpApp:(SFSDKAuthRequest *)request spAppCredentials:(SFOAuthCredentials *)spAppCrendetials completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
-    SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil  spAppCredentials:spAppCrendetials];
+    SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil spAppCredentials:spAppCrendetials];
     authSession.isAuthenticating = YES;
     authSession.authFailureCallback = failureBlock;
     authSession.authSuccessCallback = completionBlock;
     authSession.oauthCoordinator.delegate = self;
-    self.authSession = authSession;
+    self.authSessions[authSession.sceneId] = authSession;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [SFSDKWebViewStateManager removeSession];
-        [authSession.oauthCoordinator authenticate];
+        [SFSDKWebViewStateManager removeSessionForcefullyWithCompletionHandler:^{
+            [authSession.oauthCoordinator authenticate];
+        }];
+        
     });
-    return self.authSession.isAuthenticating;
+    return self.authSessions[authSession.sceneId].isAuthenticating;
 }
 
 - (BOOL)loginWithJwtToken:(NSString *)jwtToken completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
     NSAssert(jwtToken.length > 0, @"JWT token value required.");
     SFSDKAuthRequest *request = [self defaultAuthRequest];
     request.jwtToken = jwtToken;
-    return [self authenticateWithRequest:request completion:completionBlock failure:failureBlock];
+    return [self authenticateWithRequest:request
+                               loginHint:nil
+                              completion:completionBlock
+                                 failure:failureBlock
+                      frontDoorBridgeUrl:nil
+                            codeVerifier:nil];
 }
 
 - (void)logout {
     [self logoutUser:[SFUserAccountManager sharedInstance].currentUser];
 }
 
+- (void)logout:(SFLogoutReason)reason {
+    [self logoutUser:[SFUserAccountManager sharedInstance].currentUser reason:reason];
+}
+
 - (void)logoutUser:(SFUserAccount *)user {
+    [self logoutUser:user reason:SFLogoutReasonUnknown];
+}
+
+- (void)logoutUser:(SFUserAccount *)user reason:(SFLogoutReason)reason {
   
     // No-op, if the user is not valid.
     if (user == nil) {
@@ -490,32 +761,37 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     
     // Before starting actual logout (which will tear down SFRestAPI), first unregister from push notifications if needed
     __weak typeof(self) weakSelf = self;
-    [[SFPushNotificationManager sharedInstance] unregisterSalesforceNotificationsWithCompletionBlock:user completionBlock:^void() {
+    [[SFPushNotificationManager sharedInstance] unregisterSalesforceNotificationsWithCompletionBlock:user
+                                                                                     completionBlock:^void() {
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf postPushUnregistration:user];
+        [strongSelf postPushUnregistration:user logoutReason:reason];
     }];
-}
-
-- (void)restartAuthentication {
-    [self restartAuthentication:self.authSession];
 }
 
 - (void)restartAuthentication:(SFSDKAuthSession *)session {
     [session.oauthCoordinator stopAuthentication];
     __weak typeof(self) weakSelf = self;
-    [self dismissAuthViewControllerIfPresent:^{
+    UIScene *scene = session.oauthRequest.scene;
+    [self dismissAuthViewControllerIfPresentForScene:scene completion:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        strongSelf.authSession.isAuthenticating = NO;
-        [strongSelf authenticateWithRequest:session.oauthRequest completion:session.authSuccessCallback failure:session.authFailureCallback];
+        strongSelf.authSessions[scene.session.persistentIdentifier].isAuthenticating = NO;
+        // LFA passes its hint via the request's loginAsAdminLoginHint override
+        // (consulted in authenticateWithRequest:); other restart paths intentionally
+        // pass nil so a hint set on a prior session does not bleed across server changes.
+        [strongSelf authenticateWithRequest:session.oauthRequest
+                                  loginHint:nil
+                                 completion:session.authSuccessCallback
+                                    failure:session.authFailureCallback
+                         frontDoorBridgeUrl:nil
+                               codeVerifier:nil];
     }];
-    
 }
 
-- (void)postPushUnregistration:(SFUserAccount *)user {
+- (void)postPushUnregistration:(SFUserAccount *)user logoutReason:(SFLogoutReason)reason {
     
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self postPushUnregistration:user];
+            [self postPushUnregistration:user logoutReason:reason];
         });
         return;
     }
@@ -526,22 +802,27 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     NSString *userId = user.credentials.userId;
     NSString *orgId = user.credentials.organizationId;
     NSString *communityId = user.credentials.communityId;
+    NSNumber *logoutReason = [NSNumber numberWithInteger:reason];
     
-    NSDictionary *userInfo = @{ kSFNotificationUserInfoAccountKey : user };
+    NSDictionary *userInfo = @{ kSFNotificationUserInfoAccountKey : user,
+                                kSFNotificationUserInfoLogoutReasonKey: logoutReason };
     [[NSNotificationCenter defaultCenter]  postNotificationName:kSFNotificationUserWillLogout
                                                          object:self
                                                        userInfo:userInfo];
 
     [self deleteAccountForUser:user error:nil];
+    if (user.credentials.identifier.length > 0) {
+        [SFSDKDPoPKeyStore.shared deleteForCredentials:user.credentials];
+        [SFSDKDPoPNonceCache.shared clearForScope:user.credentials.identifier];
+    }
     id<SFSDKOAuthProtocol> authClient = self.authClient();
-    [authClient revokeRefreshToken:user.credentials];
-    [SFSecurityLockout clearPasscodeState:user];
+    [authClient revokeRefreshToken:user.credentials reason:reason];
     BOOL isCurrentUser = [user isEqual:self.currentUser];
     if (isCurrentUser) {
         [self setCurrentUserInternal:nil];
     }
 
-    [SFSDKWebViewStateManager removeSession];
+    [SFSDKWebViewStateManager resetSessionCookie];
     
     //restore these id's inorder to enable post logout cleanup of components
     // TODO: Revisit the userInfo data structure of kSFNotificationUserDidLogout in 7.0.
@@ -580,36 +861,38 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     [self logoutUser:[SFUserAccountManager sharedInstance].currentUser];
 }
 
-- (void)dismissAuthViewControllerIfPresent
-{
-    [self dismissAuthViewControllerIfPresent:nil];
+- (void)dismissAuthViewControllerIfPresent {
+    NSArray *scenes = [SFApplicationHelper sharedApplication].connectedScenes.allObjects;
+    for (UIScene *scene in scenes) {
+        [self dismissAuthViewControllerIfPresentForScene:scene completion:nil];
+    }
 }
 
-- (void)dismissAuthViewControllerIfPresent:(void (^)(void))completionBlock {
+- (void)dismissAuthViewControllerIfPresentForScene:(UIScene *)scene completion:(void (^)(void))completionBlock {
     if (![NSThread isMainThread]) {
         dispatch_sync(dispatch_get_main_queue(), ^{
-            [self dismissAuthViewControllerIfPresent:completionBlock];
+            [self dismissAuthViewControllerIfPresentForScene:scene completion:completionBlock];
         });
         return;
     }
-    
-    if (![SFSDKWindowManager sharedManager].authWindow.isEnabled) {
+
+    SFSDKWindowContainer *authWindow = [[SFSDKWindowManager sharedManager] authWindow:scene];
+    if (![[SFSDKWindowManager sharedManager] authWindow:scene].isEnabled) {
         if (completionBlock) completionBlock();
         return;
     }
-    
-    UIViewController *presentedViewController = [SFSDKWindowManager sharedManager].authWindow.viewController.presentedViewController;
-    
+
+    UIViewController *presentedViewController = authWindow.viewController.presentedViewController;
     if (presentedViewController && presentedViewController.isBeingPresented) {
         [presentedViewController dismissViewControllerAnimated:NO completion:^{
-            [[SFSDKWindowManager sharedManager].authWindow dismissWindowAnimated:NO withCompletion:^{
+            [[[SFSDKWindowManager sharedManager] authWindow:scene] dismissWindowAnimated:NO withCompletion:^{
                 if (completionBlock) {
                     completionBlock();
                 }
             }];
         }];
     } else {
-        [[SFSDKWindowManager sharedManager].authWindow dismissWindowAnimated:NO withCompletion:^{
+        [[[SFSDKWindowManager sharedManager] authWindow:scene] dismissWindowAnimated:NO withCompletion:^{
             if (completionBlock) {
                 completionBlock();
             }
@@ -617,13 +900,120 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
 }
 
-+ (BOOL)errorIsInvalidAuthCredentials:(NSError *)error {
-    return [SFSDKAuthErrorManager errorIsInvalidAuthCredentials:error];
+- (void)migrateRefreshToken:(SFUserAccount *)user
+               newAppConfig:(SFSDKAppConfig *)newAppConfig
+                    success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
+    [self migrateRefreshToken:user newAppConfig:newAppConfig useDPoP:nil success:completionBlock failure:failureBlock];
 }
+
+- (void)migrateRefreshToken:(SFUserAccount *)user
+               newAppConfig:(SFSDKAppConfig *)newAppConfig
+                    useDPoP:(nullable NSNumber *)useDPoP
+                    success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
+
+    // Store the migrated user's credentials to revoke them once migration completes. Snapshot the
+    // passed-in `user`, not `self.currentUser`: the two differ when upgrading a background account,
+    // and revoking currentUser's token here would sign out the wrong user.
+    SFOAuthCredentials *preMigrationCredentials = user.credentials;
+
+    // Creating a SFSDKAuthRequest and SFSDKAuthSession
+    SFSDKAuthRequest *request = [self migrateRefreshAuthRequest:newAppConfig];
+    request.useDPoP = useDPoP;
+    SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
+    authSession.isAuthenticating = YES;
+    // Snapshot DPoP-ness before the revoke block below can mutate `preMigrationCredentials`:
+    // `revokeRefreshToken:` synchronously clears `tokenType` (and other fields) on the credentials
+    // object it's handed, so reading `tokenType` after that call would always see it as non-DPoP.
+    BOOL preMigrationWasDPoP = [SFSDKDPoPRequestDecorator isDPoPTokenType:preMigrationCredentials.tokenType];
+    authSession.authSuccessCallback = ^(SFOAuthInfo *authInfo, SFUserAccount *newUserAccount) {
+        if (preMigrationCredentials != nil && ![preMigrationCredentials.refreshToken isEqualToString:newUserAccount.credentials.refreshToken]) {
+
+            id<SFSDKOAuthProtocol> authClient = self.authClient();
+            [authClient revokeRefreshToken:preMigrationCredentials reason:SFLogoutReasonRefreshTokenRotated];
+        }
+
+        // Downgrade cleanup: if this migration moved the user off a DPoP-bound identifier onto a
+        // non-DPoP one, the pre-migration DPoP key pair and nonce-cache entries are now obsolete
+        // and would otherwise leak until logout. Only reclaim them once the migration has actually
+        // succeeded with a non-DPoP result — a failed/cancelled migration (authFailureCallback)
+        // leaves the original DPoP session untouched and fully functional.
+        if (preMigrationWasDPoP
+            && ![SFSDKDPoPRequestDecorator isDPoPTokenType:newUserAccount.credentials.tokenType]
+            && preMigrationCredentials.identifier.length > 0) {
+            [SFSDKDPoPKeyStore.shared deleteForCredentials:preMigrationCredentials];
+            [SFSDKDPoPNonceCache.shared clearForScope:preMigrationCredentials.identifier];
+        }
+
+        if (completionBlock) {
+            completionBlock(authInfo, newUserAccount);
+        }
+    };
+    authSession.authFailureCallback = failureBlock;
+    authSession.oauthCoordinator.delegate = self;
+    authSession.identityCoordinator.delegate = self;
+    self.authSessions[authSession.sceneId] = authSession;
+    
+    // Kicking off the actual migration (will load front-door approval URL in web view)
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        // Guard: if the session was removed before this block ran (e.g. the caller
+        // manually invoked the success/failure callback in a test, or another code
+        // path cancelled the session), skip the OAuth kick-off so no stale
+        // coordinator attempts to fire a network request for a dead session.
+        if (!strongSelf || !strongSelf.authSessions[authSession.sceneId]) { return; }
+        [strongSelf dismissAuthViewControllerIfPresentForScene:authSession.oauthRequest.scene completion:^{
+            if (!strongSelf.authSessions[authSession.sceneId]) { return; }
+            [authSession.oauthCoordinator migrateRefreshToken:user];
+        }];
+    });
+}
+
+- (void)upgradeToDPoP:(SFUserAccount *)user
+               success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+               failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
+    // No-op if the session is already DPoP-bound: there's nothing to migrate, so return the
+    // user unchanged rather than kicking off a needless re-authentication.
+    if ([SFSDKDPoPRequestDecorator isDPoPTokenType:user.credentials.tokenType]) {
+        if (completionBlock) {
+            completionBlock(nil, user);
+        }
+        return;
+    }
+    SFOAuthCredentials *credentials = user.credentials;
+    SFSDKAppConfig *sameAppConfig = [[SFSDKAppConfig alloc] initWithDict:@{
+        @"remoteAccessConsumerKey": credentials.clientId ?: @"",
+        @"oauthRedirectURI": credentials.redirectUri ?: @"",
+        @"oauthScopes": credentials.scopes ?: @[]
+    }];
+    [self migrateRefreshToken:user newAppConfig:sameAppConfig useDPoP:@YES success:completionBlock failure:failureBlock];
+}
+
+- (void)downgradeFromDPoP:(SFUserAccount *)user
+               success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+               failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
+    // No-op if the session is already unbound (Bearer): there's nothing to migrate, so return
+    // the user unchanged rather than kicking off a needless re-authentication.
+    if (![SFSDKDPoPRequestDecorator isDPoPTokenType:user.credentials.tokenType]) {
+        if (completionBlock) {
+            completionBlock(nil, user);
+        }
+        return;
+    }
+    SFOAuthCredentials *credentials = user.credentials;
+    SFSDKAppConfig *sameAppConfig = [[SFSDKAppConfig alloc] initWithDict:@{
+        @"remoteAccessConsumerKey": credentials.clientId ?: @"",
+        @"oauthRedirectURI": credentials.redirectUri ?: @"",
+        @"oauthScopes": credentials.scopes ?: @[]
+    }];
+    [self migrateRefreshToken:user newAppConfig:sameAppConfig useDPoP:@NO success:completionBlock failure:failureBlock];
+}
+
 
 #pragma mark - SFOAuthCoordinatorDelegate
 - (void)oauthCoordinatorWillBeginAuthentication:(SFOAuthCoordinator *)coordinator authInfo:(SFOAuthInfo *)info {
-    coordinator.authSession.authInfo  = info;
     NSDictionary *userInfo = @{ kSFNotificationUserInfoCredentialsKey: coordinator.credentials,
                                 kSFNotificationUserInfoAuthTypeKey: coordinator.authInfo };
     [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserWillLogIn
@@ -632,35 +1022,19 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 - (void)oauthCoordinatorDidAuthenticate:(SFOAuthCoordinator *)coordinator authInfo:(SFOAuthInfo *)info {
-     coordinator.authSession.authInfo  = info;
      [self loggedIn:NO coordinator:coordinator notifyDelegatesOfFailure:YES];
 }
 
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didFailWithError:(NSError *)error authInfo:(nullable SFOAuthInfo *)info {
     coordinator.authSession.authError = error;
-    coordinator.authSession.authInfo  = info;
-    __block BOOL errorWasHandledByDelegate = NO;
-    
-    //check if the request was initiated by spapp (idp scenario only)
+
+    // check if the request was initiated by spapp (idp scenario only)
     if (coordinator.authSession.oauthRequest.authenticateRequestFromSPApp) {
        [SFSDKIDPAuthHelper invokeSPAppWithError:coordinator.spAppCredentials error:error reason:@"User cancelled authentication"];
         return;
     }
     
-    [self enumerateDelegates:^(id <SFUserAccountManagerDelegate> delegate) {
-        if ([delegate respondsToSelector:@selector(userAccountManager:error:info:)]) {
-            BOOL returnVal = [delegate userAccountManager:self error:error info:coordinator.authInfo];
-            errorWasHandledByDelegate |= returnVal;
-        }
-    }];
-
-    if (!errorWasHandledByDelegate) {
-       BOOL errorWasHandledBySDK =  [self.errorManager processAuthError:error authContext:coordinator.authSession options:nil];
-        if (!errorWasHandledBySDK) {
-            [SFSDKCoreLogger e:[self class] format:@"Unhandled Error during authentication. Handle the error using   [SFUserAccountManagerDelegate userAccountManager:error:info:] and return true. %@", error.localizedDescription];
-        }
-    }
-    self.authSession.notifiesDelegatesOfFailure = YES;
+    coordinator.authSession.notifiesDelegatesOfFailure = YES;
     [self handleFailure:error session:coordinator.authSession];
 }
 
@@ -676,7 +1050,40 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator willBeginBrowserAuthentication:(SFOAuthBrowserFlowCallbackBlock)callbackBlock {
     coordinator.authSession.authCoordinatorBrowserBlock = callbackBlock;
-    callbackBlock(YES);
+    SFBiometricAuthenticationManagerInternal *bioAuthManager = [SFBiometricAuthenticationManagerInternal shared];
+    // Per-scene one-shot suppression armed by -lock: for the browser attempt it triggers on this
+    // scene. Consume only this scene's flag so being locked never suppresses a later attempt
+    // (fallback picker, gear-menu retry) and one scene's consume can't drain another's — login()
+    // fans out to every connected scene and each reaches this gate independently.
+    BOOL suppress = [bioAuthManager consumeBrowserAuthenticationSuppressionForSceneId:coordinator.authSession.sceneId];
+    if (suppress) {
+        // Biometric is locked: suppress the browser and show the picker as the fallback landing
+        // screen behind the biometric prompt -lock: already presented.
+        callbackBlock(NO);
+        [self presentLoginHostListViewControllerForBiometricFallback:coordinator.authSession];
+    } else {
+        callbackBlock(YES);
+    }
+}
+
+// Presents the login-host picker as the fallback landing screen when Advanced Auth is suppressed
+// for a biometric-locked user, mirroring oauthCoordinatorDidCancelBrowserAuthentication:'s picker
+// presentation. Driven explicitly since callbackBlock(NO) triggers no cancel delegate.
+- (void)presentLoginHostListViewControllerForBiometricFallback:(SFSDKAuthSession *)authSession {
+    if (self.authCancelledByUserHandlerBlock) {
+        self.authCancelledByUserHandlerBlock();
+        return;
+    }
+    SFSDKLoginHostListViewController *hostListViewController = [[SFSDKLoginHostListViewController alloc] initWithStyle:UITableViewStylePlain];
+    hostListViewController.delegate = self;
+    SFSDKNavigationController *controller = [[SFSDKNavigationController alloc] initWithRootViewController:hostListViewController];
+    hostListViewController.hidesCancelButton = YES;
+    hostListViewController.presentedAsLoginScreen = YES;
+    controller.modalPresentationStyle = UIModalPresentationFullScreen;
+    UIScene *scene = authSession.oauthRequest.scene;
+    [[[SFSDKWindowManager sharedManager] authWindow:scene] presentWindowAnimated:NO withCompletion:^{
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController presentViewController:controller animated:NO completion:nil];
+    }];
 }
 
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator displayAlertMessage:(NSString*)message completion:(dispatch_block_t)completion {
@@ -687,7 +1094,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
        builder.actionOneCompletion = completion;
    }];
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.alertDisplayBlock(messageObject, [SFSDKWindowManager sharedManager].authWindow);
+        self.alertDisplayBlock(messageObject, [[SFSDKWindowManager sharedManager] authWindow:coordinator.authSession.oauthRequest.scene]);
    });
     
 }
@@ -706,26 +1113,94 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         };
     }];
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.alertDisplayBlock(messageObject, [SFSDKWindowManager sharedManager].authWindow);
+        self.alertDisplayBlock(messageObject, [[SFSDKWindowManager sharedManager] authWindow:coordinator.authSession.oauthRequest.scene]);
     });
 }
 // IDP related code fetched as an identity provider app
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (void)oauthCoordinatorDidFetchAuthCode:(SFOAuthCoordinator *)coordinator authInfo:(SFOAuthInfo *)authInfo {
-    coordinator.authSession.authInfo = authInfo;
+    SFSDKAuthCommand *authCommand;
+    NSString *keychainReference = coordinator.authSession.oauthRequest.keychainReference;
+    if (keychainReference) { // IDP request to SP
+        SFSDKIDPAuthCodeLoginRequestCommand *command = [[SFSDKIDPAuthCodeLoginRequestCommand alloc] init];
+        command.userHint = [self encodeUserIdentity:[self currentUserIdentity]];
+        command.keychainReference = keychainReference;
+        command.keychainGroup = coordinator.authSession.oauthRequest.keychainGroup;
+        command.authCode = coordinator.authSession.spAppCredentials.authCode;
+        authCommand = command;
+    } else { // SP - IDP response
+        SFSDKSPLoginResponseCommand *command = [[SFSDKSPLoginResponseCommand alloc] init];
+        command.authCode = coordinator.authSession.spAppCredentials.authCode;
+        authCommand = command;
+    }
+    
+    NSString *spAppRedirectUri = coordinator.authSession.spAppCredentials.redirectUri;
+    NSURL *spAppURL = [NSURL URLWithString:spAppRedirectUri];
+    authCommand.scheme = spAppURL.scheme;
     
     // Fetched auth code as an idp app
-    [SFSDKIDPAuthHelper invokeSPApp:self.authSession completion:^(BOOL result) {
+    [SFSDKIDPAuthHelper invokeSPApp:[authCommand requestURL] completion:^(BOOL result) {
         [self dismissAuthViewControllerIfPresent];
     }];
-    
 }
+#pragma clang diagnostic pop
 
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithView:(WKWebView *)view {
-
     SFLoginViewController *loginViewController = [self createLoginViewControllerInstance:coordinator];
     loginViewController.oauthView = view;
     SFSDKAuthViewHolder *viewHolder = [SFSDKAuthViewHolder new];
     viewHolder.loginController = loginViewController;
+    viewHolder.scene = coordinator.authSession.oauthRequest.scene;
+    
+    void (^authViewDisplayBlock)(void) = ^{
+        
+        self.authViewHandler.authViewDisplayBlock(viewHolder);
+        if (coordinator.frontdoorBridgeLoginOverride) {
+            NSString *errorTitle = nil;
+            NSString *errorMessage = nil;
+            if (!coordinator.frontdoorBridgeLoginOverride.matchesConsumerKey) {
+                errorTitle = [SFSDKResourceUtils localizedString:@"Error"];
+                errorMessage = [SFSDKResourceUtils localizedString:@"authAlertFrontdoorLoginUrlConsumerKeyMismatch"];
+            }
+            if (errorTitle && errorMessage) {
+                UIAlertController* alertController = [UIAlertController
+                                                      alertControllerWithTitle:errorTitle
+                                                      message:errorMessage
+                                                      preferredStyle:UIAlertControllerStyleAlert];
+                [alertController addAction:[UIAlertAction actionWithTitle:[SFSDKResourceUtils localizedString:@"OK"] style:UIAlertActionStyleDefault handler:nil]];
+                [loginViewController
+                 presentViewController:alertController
+                 animated:true
+                 completion:nil];
+            }
+        }
+    };
+    
+    // Ensure this runs on the main thread.  Has to be sync, because the coordinator expects the auth view
+    // to be added to a superview by the end of this method.
+    if (![NSThread isMainThread]) {
+        dispatch_sync(dispatch_get_main_queue(), authViewDisplayBlock);
+    } else {
+        authViewDisplayBlock();
+    }
+}
+
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithSession:(ASWebAuthenticationSession *)session {
+    SFSDKAuthViewHolder *viewHolder = [SFSDKAuthViewHolder new];
+    viewHolder.isAdvancedAuthFlow = YES;
+    viewHolder.session = session;
+    viewHolder.scene = coordinator.authSession.oauthRequest.scene;
+    NSDictionary *userInfo = @{ kSFNotificationUserInfoCredentialsKey: coordinator.credentials,
+                                kSFNotificationUserInfoAuthTypeKey: coordinator.authInfo };
+    [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserWillShowAuthView object:self  userInfo:userInfo];
+    self.authViewHandler.authViewDisplayBlock(viewHolder);
+}
+
+- (void)oauthCoordinatorDidBeginNativeAuthentication:(SFOAuthCoordinator *)coordinator {
+    SFSDKAuthViewHolder *viewHolder = [SFSDKAuthViewHolder new];
+    viewHolder.scene = coordinator.authSession.oauthRequest.scene;
+    
     // Ensure this runs on the main thread.  Has to be sync, because the coordinator expects the auth view
     // to be added to a superview by the end of this method.
     if (![NSThread isMainThread]) {
@@ -737,18 +1212,34 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
 }
 
-- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithSession:(ASWebAuthenticationSession *)session {
-    SFSDKAuthViewHolder *viewHolder = [SFSDKAuthViewHolder new];
-    viewHolder.isAdvancedAuthFlow = YES;
-    viewHolder.session = session;
-    NSDictionary *userInfo = @{ kSFNotificationUserInfoCredentialsKey: coordinator.credentials,
-                                kSFNotificationUserInfoAuthTypeKey: coordinator.authInfo };
-    [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserWillShowAuthView object:self  userInfo:userInfo];
-    self.authViewHandler.authViewDisplayBlock(viewHolder);
-}
-
 - (void)oauthCoordinatorDidCancelBrowserAuthentication:(SFOAuthCoordinator *)coordinator {
-    
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self oauthCoordinatorDidCancelBrowserAuthentication:coordinator];
+        });
+        return;
+    }
+
+    // When "Login for Admin" initiated the browser auth, clear the flag and
+    // its My Domain / login hint overrides, then restart the WebView login
+    // flow against the originally configured host instead of showing the
+    // server picker. For Welcome Discovery, this means the user lands back
+    // on the discovery page and re-picks an account.
+    if (coordinator.authSession.oauthRequest.loginAsAdmin) {
+        coordinator.authSession.oauthRequest.loginAsAdmin = NO;
+        coordinator.authSession.oauthRequest.loginAsAdminMyDomain = nil;
+        coordinator.authSession.oauthRequest.loginAsAdminLoginHint = nil;
+        [self restartAuthentication:coordinator.authSession];
+        return;
+    }
+
+    if (self.nativeLoginEnabled && self.shouldFallbackToWebAuthentication) {
+        self.shouldFallbackToWebAuthentication = NO;
+        [self stopCurrentAuthentication:nil];
+        [self loginWithCompletion:^(SFOAuthInfo* authInfo, SFUserAccount* user) { } failure:^(SFOAuthInfo* authInfo, NSError* error) { }];
+        return;
+    }
+
     SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeAdvancedBrowser];
     NSDictionary *userInfo = @{ kSFNotificationUserInfoCredentialsKey: coordinator.credentials,
                                kSFNotificationUserInfoAuthTypeKey: authInfo };
@@ -759,9 +1250,14 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
            hostListViewController.delegate = self;
            SFSDKNavigationController *controller = [[SFSDKNavigationController alloc] initWithRootViewController:hostListViewController];
            hostListViewController.hidesCancelButton = YES;
+           // This is the screen the user lands on in the forced-advanced-auth path (e.g. after
+           // cancelling the browser), where SFLoginViewController is never created. Mark it as the
+           // standalone login screen so it surfaces the back button and gear / "Login Options"
+           // menu that would otherwise live on SFLoginViewController.
+           hostListViewController.presentedAsLoginScreen = YES;
            controller.modalPresentationStyle = UIModalPresentationFullScreen;
-           [[SFSDKWindowManager sharedManager].authWindow presentWindowAnimated:NO withCompletion:^{
-               [[SFSDKWindowManager sharedManager].authWindow.viewController presentViewController:controller animated:NO completion:nil];
+        [[[SFSDKWindowManager sharedManager] authWindow:coordinator.authSession.oauthRequest.scene] presentWindowAnimated:NO withCompletion:^{
+            [[[SFSDKWindowManager sharedManager] authWindow:coordinator.authSession.oauthRequest.scene].viewController presentViewController:controller animated:NO completion:nil];
            }];
     } else {
         self.authCancelledByUserHandlerBlock();
@@ -779,8 +1275,8 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         // No retry, as missing parameters are fatal
         [SFSDKCoreLogger e:[self class] format:@"Missing parameters attempting to retrieve identity data.  Error domain: %@, code: %ld, description: %@", [error domain], [error code], [error localizedDescription]];
         id<SFSDKOAuthProtocol> authClient = self.authClient();
-        [authClient revokeRefreshToken:coordinator.credentials];
-       [self handleFailure:error session:self.authSession];
+        [authClient revokeRefreshToken:coordinator.credentials reason:SFLogoutReasonUnexpectedResponse];
+       [self handleFailure:error session:coordinator.authSession];
     } else {
         [SFSDKCoreLogger e:[self class] format:@"Error retrieving idData:%@", error];
         SFSDKAlertMessage *message = [SFSDKAlertMessage messageWithBlock:^(SFSDKAlertMessageBuilder *builder) {
@@ -793,7 +1289,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
             };
         }];
         dispatch_async(dispatch_get_main_queue(), ^{
-           self.alertDisplayBlock(message, [SFSDKWindowManager sharedManager].authWindow);
+            self.alertDisplayBlock(message, [[SFSDKWindowManager sharedManager] authWindow:coordinator.authSession.oauthRequest.scene]);
         });
     }
 }
@@ -804,8 +1300,73 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     self.loginHost = newLoginHost.host;
     NSNotification *loginHostChangedNotification = [NSNotification notificationWithName:kSFNotificationDidChangeLoginHost object:self userInfo:userInfo];
     [[NSNotificationCenter defaultCenter] postNotification:loginHostChangedNotification];
-    self.authSession.oauthRequest.loginHost = newLoginHost.host;
-    [self restartAuthentication];
+    NSString *sceneId = loginViewController.view.window.windowScene.session.persistentIdentifier;
+    self.authSessions[sceneId].oauthRequest.loginHost = newLoginHost.host;
+    [self restartAuthenticationForViewController:loginViewController];
+}
+
+- (void)loginViewControllerDidClearCache:(SFLoginViewController *)loginViewController {
+    [SFSDKWebViewStateManager clearCacheWithCompletionHandler:^{
+        [self restartAuthenticationForViewController:loginViewController];
+    }];
+}
+
+- (void)loginViewControllerDidClearCookies:(SFLoginViewController *)loginViewController {
+    [SFSDKWebViewStateManager removeSessionForcefullyWithCompletionHandler:^{
+        [self restartAuthenticationForViewController:loginViewController];
+    }];
+}
+
+- (void)loginViewControllerDidReload:(SFLoginViewController *)loginViewController {
+    [self restartAuthenticationForViewController:loginViewController];
+}
+
+- (void)loginViewControllerDidSelectLoginForAdmin:(SFLoginViewController *)loginViewController {
+    NSString *sceneId = loginViewController.view.window.windowScene.session.persistentIdentifier;
+    SFSDKAuthSession *session = self.authSessions[sceneId];
+    SFOAuthCoordinator *coordinator = session.oauthCoordinator;
+
+    // Phase-1 Welcome Discovery: a discovery host is loaded but the user has not
+    // yet picked an account, so credentials.domain is still the discovery host
+    // and we have no My Domain to advance to. Switching to ASWebAuthenticationSession
+    // here would launch the browser against welcome.salesforce.com — wrong UX.
+    // No-op until phase 2 lands.
+    if ([SFDomainDiscoveryCoordinator isDiscoveryDomain:session.oauthRequest.loginHost] && !coordinator.domainUpdated) {
+        [SFSDKCoreLogger w:[self class] format:@"%@: Login for Admin is not available before a My Domain has been selected on the Welcome Discovery page; ignoring.", NSStringFromSelector(_cmd)];
+        return;
+    }
+
+    // Phase-2 Welcome Discovery (or a non-discovery host): record the resolved
+    // My Domain and login hint as LFA-scoped overrides on the request. The
+    // request's loginHost is left untouched so that Reload / Clear Cache /
+    // post-cancel restart continue to use the originally configured host.
+    // These overrides are in-memory only and are cleared on LFA cancel.
+    session.oauthRequest.loginAsAdminMyDomain = coordinator.credentials.domain.length > 0 ? coordinator.credentials.domain : nil;
+    session.oauthRequest.loginAsAdminLoginHint = coordinator.loginHint.length > 0 ? coordinator.loginHint : nil;
+    session.oauthRequest.loginAsAdmin = YES;
+    [self restartAuthenticationForViewController:loginViewController];
+}
+
+- (void)loginViewControllerDidChangeLoginOptions:(SFLoginViewController *)loginViewController {
+    [self restartAuthenticationForViewController:loginViewController recreateAuthRequest:YES];
+}
+
+- (void)restartAuthenticationForViewController:(SFLoginViewController *)loginViewController {
+    [self restartAuthenticationForViewController:loginViewController recreateAuthRequest:NO];
+}
+
+- (void)restartAuthenticationForViewController:(SFLoginViewController *)loginViewController recreateAuthRequest:(BOOL)recreateAuthRequest {
+    NSString *sceneId = loginViewController.view.window.windowScene.session.persistentIdentifier;
+
+    SFSDKAuthSession* session = self.authSessions[sceneId];
+
+    // Recreate the oauth request
+    // Otherwise changes to consumer key / callback url or scopes will not get picked up
+    if (recreateAuthRequest) {
+        session.oauthRequest = [self defaultAuthRequestWithLoginHost:session.oauthRequest.loginHost];
+    }
+    
+    [self restartAuthentication:session];
 }
 
 #pragma mark - SFSDKLoginHostDelegate
@@ -816,10 +1377,12 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 - (void)hostListViewController:(SFSDKLoginHostListViewController *)hostListViewController didChangeLoginHost:(SFSDKLoginHost *)newLoginHost {
     [_accountsLock lock];
     NSDictionary *userInfo = @{kSFNotificationPreviousLoginHost: self.loginHost, kSFNotificationCurrentLoginHost: newLoginHost.host};
+    self.previousLoginHost = self.loginHost;
     self.loginHost = newLoginHost.host;
     NSNotification *loginHostChangedNotification = [NSNotification notificationWithName:kSFNotificationDidChangeLoginHost object:self userInfo:userInfo];
     [[NSNotificationCenter defaultCenter] postNotification:loginHostChangedNotification];
-    self.authSession.oauthRequest.loginHost = newLoginHost.host;
+    NSString *sceneId = hostListViewController.navigationController.visibleViewController.view.window.windowScene.session.persistentIdentifier;
+    [self.authSessions objectForKey:sceneId].oauthRequest.loginHost = newLoginHost.host;
     [_accountsLock unlock];
 }
 
@@ -827,30 +1390,50 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     [self loginHostSelected:hostListViewController];
 }
 
+- (void)hostListViewControllerDidChangeLoginOptions:(SFSDKLoginHostListViewController *)hostListViewController {
+    // Reached from the host list's gear menu in the forced-advanced-auth path. Recreate the
+    // auth request and restart so changed login options (e.g. forceAdvancedAuthentication) take
+    // effect, mirroring loginViewControllerDidChangeLoginOptions: on the WebView screen.
+    NSString *sceneId = hostListViewController.view.window.windowScene.session.persistentIdentifier;
+    SFSDKAuthSession *session = self.authSessions[sceneId];
+    session.oauthRequest = [self defaultAuthRequestWithLoginHost:session.oauthRequest.loginHost];
+    [self restartAuthentication:session];
+}
+
 - (void)loginHostSelected:(SFSDKLoginHostListViewController *)hostListViewController {
+    NSString *sceneId = hostListViewController.navigationController.visibleViewController.view.window.windowScene.session.persistentIdentifier;
     [hostListViewController dismissViewControllerAnimated:YES completion:nil];
-    [self restartAuthentication];
+    [self restartAuthentication: [self.authSessions objectForKey:sceneId]];
 }
 
 #pragma mark - SFSDKLoginFlowSelectionViewDelegate (SP App flow Related Actions)
 
 -(void)loginFlowSelectionIDPSelected:(UIViewController *)controller options:(NSDictionary *)appOptions {
     //User picked IDP flow from login Selection screen. start the idp flow.
+    UIScene *scene = controller.view.window.windowScene;
+    NSString *sceneId = scene.session.persistentIdentifier;
     NSString *loginHost = appOptions[kSFLoginHostParam];
     if (loginHost) {
-        self.authSession.oauthCoordinator.credentials.domain = loginHost;
+        self.authSessions[sceneId].oauthCoordinator.credentials.domain = loginHost;
     }
-    self.authSession.oauthRequest.appDisplayName = self.appDisplayName;
-    [SFSDKIDPAuthHelper invokeIDPApp:self.authSession completion:^(BOOL result) {
-       [SFSDKCoreLogger d:[self class] format:@"Launced IDP App"];
+    self.authSessions[sceneId].oauthRequest.appDisplayName = self.appDisplayName;
+    [SFSDKIDPAuthHelper invokeIDPApp:self.authSessions[sceneId] completion:^(BOOL result) {
+       [SFSDKCoreLogger d:[self class] format:@"Launched IDP App"];
     }];
 }
 
 -(void)loginFlowSelectionLocalLoginSelected:(UIViewController *)controller options:(NSDictionary *)appOptions  {
     __weak typeof (self) weakSelf = self;
-    [self dismissAuthViewControllerIfPresent:^{
+    UIScene *scene = controller.view.window.windowScene;
+    NSString *sceneId = scene.session.persistentIdentifier;
+    [self dismissAuthViewControllerIfPresentForScene:scene completion:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf authenticateWithRequest:strongSelf.authSession.oauthRequest completion:strongSelf.authSession.authSuccessCallback  failure:strongSelf.authSession.authFailureCallback];
+        [strongSelf authenticateWithRequest:strongSelf.authSessions[sceneId].oauthRequest
+                                  loginHint:nil
+                                 completion:strongSelf.authSessions[sceneId].authSuccessCallback
+                                    failure:strongSelf.authSessions[sceneId].authFailureCallback
+                         frontDoorBridgeUrl:nil
+                               codeVerifier:nil];
     }];
 }
 
@@ -859,13 +1442,15 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     //Create new user selected in IDP flow in the idp app mode.
     SFSDKAuthRequest *request = [self defaultAuthRequest];
     request.authenticateRequestFromSPApp = YES;
-    __weak typeof(self) weakSelf = self;
     SFOAuthCredentials *spAppCredentials = [self spAppCredentials:spAppOptions];
+    __weak typeof(self) weakSelf = self;
     [self stopCurrentAuthentication:^(BOOL result) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf authenticateWithRequestOnBehalfOfSpApp:request spAppCredentials:spAppCredentials  completion:^(SFOAuthInfo *authInfo, SFUserAccount *user) {
-            [strongSelf authenticateOnBehalfOfSPApp:user spAppCredentials:spAppCredentials];
-        } failure:^(SFOAuthInfo *authInfo, NSError *error) {
+            [strongSelf authenticateOnBehalfOfSPApp:user spAppCredentials:spAppCredentials authRequest:nil success:nil failure:^(NSError *error){
+                [SFSDKIDPAuthHelper invokeSPAppWithError:spAppCredentials error:error reason:@"Failed refreshing credentials"];
+            }];
+        } failure:^(SFOAuthInfo *authInfo, NSError *error){
             [SFSDKIDPAuthHelper invokeSPAppWithError:spAppCredentials error:error reason:@"Failed refreshing credentials"];
         }];
     }];
@@ -873,21 +1458,15 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 - (void)selectedUser:(SFUserAccount *)user spAppContext:(NSDictionary *)spAppOptions {
-     //User has been selected in the idp app mode.
-     //make sure access token is not expired
-    __weak typeof (self) weakSelf = self;
+     // User has been selected in the idp app mode.
     SFOAuthCredentials *spAppCredentials = [self spAppCredentials:spAppOptions];
-    SFRestRequest *request = [[SFRestAPI sharedInstanceWithUser:user] requestForUserInfo];
-    [[SFRestAPI sharedInstanceWithUser:user] sendRequest:request failureBlock:^(id response, NSError *error, NSURLResponse *rawResponse) {
+    [self authenticateOnBehalfOfSPApp:[self currentUser] spAppCredentials:spAppCredentials authRequest:nil success:nil failure:^(NSError *error) {
         [SFSDKIDPAuthHelper invokeSPAppWithError:spAppCredentials error:error reason:@"Failed refreshing credentials"];
-    } successBlock:^(id response, NSURLResponse *rawResponse) {
-        __strong typeof (self) strongSelf = weakSelf;
-        [strongSelf authenticateOnBehalfOfSPApp:user spAppCredentials:spAppCredentials];
     }];
 }
 
 - (void)cancel:(NSDictionary *)spAppOptions {
-   // Uset Cancelled auth in the idp app mode
+   // User Cancelled auth in the idp app mode
     SFOAuthCredentials *spAppCredentials = [self spAppCredentials:spAppOptions];
     [SFSDKIDPAuthHelper invokeSPAppWithError:spAppCredentials error:nil reason:@"User cancelled Authentication"];
 }
@@ -902,7 +1481,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     
     NSString *loginHost = callingAppOptions[kSFLoginHostParam];
     
-    if (loginHost == nil || [loginHost isEmptyOrWhitespaceAndNewlines]){
+    if (loginHost == nil || [loginHost sfsdk_isEmptyOrWhitespaceAndNewlines]){
         loginHost = self.loginHost;
     }
     creds.domain = loginHost;
@@ -956,10 +1535,14 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
 }
 
-- (BOOL)handleAdvancedAuthURL:(NSURL *)advancedAuthURL {
+- (BOOL)handleAdvancedAuthURL:(NSURL *)advancedAuthURL options:(NSDictionary *)options {
     BOOL result = NO;
-    if (self.authSession) {
-        result = [self.authSession.oauthCoordinator handleAdvancedAuthenticationResponse:advancedAuthURL];
+    NSString *sceneId = options[kSFIDPSceneIdKey];
+    if (!sceneId) {
+        sceneId = [[SFSDKWindowManager sharedManager] defaultScene].session.persistentIdentifier;
+    }
+    if (self.authSessions[sceneId]) {
+        result = [self.authSessions[sceneId].oauthCoordinator handleAdvancedAuthenticationResponse:advancedAuthURL];
     }
     return result;
 }
@@ -1002,7 +1585,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     tokenQuery[(__bridge id)kSecReturnAttributes] = (id)kCFBooleanTrue;
 
     CFArrayRef outArr = nil;
-    OSStatus result = SecItemCopyMatching((__bridge CFDictionaryRef)[NSDictionary dictionaryWithDictionary:tokenQuery], (CFTypeRef *)&outArr);
+    OSStatus result = [SFSDKSecItemOperations copyMatching:[NSDictionary dictionaryWithDictionary:tokenQuery] result:(CFTypeRef *)&outArr];
     if (noErr == result) {
         NSMutableSet *accounts = [NSMutableSet set];
         for (NSDictionary *info in (__bridge_transfer NSArray *)outArr) {
@@ -1038,6 +1621,36 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     SFUserAccount *newAcct = [[SFUserAccount alloc] initWithCredentials:credentials];
     [self saveAccountForUser:newAcct error:nil];
     return newAcct;
+}
+
+- (void)createNativeUserAccount:(NSData *)data scene:(nullable UIScene *)scene {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self createNativeUserAccount:data scene:scene];
+        });
+        return;
+    }
+    
+    UIScene *nativeLoginScene = scene ? scene : [[[SalesforceSDKManager sharedManager] nativeLoginViewControllers] objectForKey:kSFDefaultNativeLoginViewControllerKey].view.window.windowScene;
+    SFSDKAuthSession *authSession = self.authSessions[nativeLoginScene.session.persistentIdentifier];
+    // Dummy request is necessary for flow
+    SFSDKOAuthTokenEndpointRequest *request = [[SFSDKOAuthTokenEndpointRequest alloc] init];
+    request.additionalOAuthParameterKeys = [NSArray new];
+    
+    // Let SFSDKOAuth2 do error handling
+    [(SFSDKOAuth2 *)self.authClient() handleTokenEndpointResponse:^(SFSDKOAuthTokenEndpointResponse *response) {
+        [[authSession oauthCoordinator] updateCredentials:[response asDictionary]];
+        authSession.credentials = authSession.oauthCoordinator.credentials;
+        authSession.identityCoordinator = [[SFIdentityCoordinator alloc] initWithCredentials:authSession.credentials];
+        
+        authSession.oauthCoordinator.delegate = self;
+        authSession.identityCoordinator.delegate = self;
+        authSession.oauthCoordinator.authSession = authSession;
+        authSession.identityCoordinator.authSession = authSession;
+        authSession.nativeLogin = YES;
+        
+        [[authSession identityCoordinator] initiateIdentityDataRetrieval];
+    } request:request data:data urlResponse:[[NSURLResponse alloc] init]];
 }
 
 - (void)migrateUserDefaults {
@@ -1113,6 +1726,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     SFUserAccount *result = nil;
     [_accountsLock lock];
     result = (self.userAccountMap)[userIdentity];
+
     [_accountsLock unlock];
     return result;
 }
@@ -1142,7 +1756,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     for (SFUserAccountIdentity *key in self.userAccountMap) {
         SFUserAccount *account = (self.userAccountMap)[key];
         NSString *accountOrg = account.credentials.organizationId;
-        if ([accountOrg isEqualToEntityId:orgId]) {
+        if ([accountOrg sfsdk_isEqualToEntityId:orgId]) {
             [responseArray addObject:account];
         }
     }
@@ -1229,11 +1843,6 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 - (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials withIdData:(SFIdentityData *) identityData {
-    return [self applyCredentials:credentials withIdData:identityData andNotification:YES];
-}
-
-- (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials withIdData:(SFIdentityData *) identityData andNotification:(BOOL) shouldSendNotification{
-    
     SFUserAccount *currentAccount = [self accountForCredentials:credentials];
     SFUserAccountDataChange accountDataChange = SFUserAccountDataChangeUnknown;
     SFUserAccountChange userAccountChange = SFUserAccountChangeUnknown;
@@ -1269,13 +1878,11 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         currentAccount.idData = identityData;
     }
     [self saveAccountForUser:currentAccount error:nil];
-
-    if(shouldSendNotification) {
-        if (accountDataChange != SFUserAccountChangeUnknown) {
-            [self notifyUserDataChange:SFUserAccountManagerDidChangeUserDataNotification withUser:currentAccount andChange:accountDataChange];
-        } else if (userAccountChange!=SFUserAccountDataChangeUnknown) {
-            [self notifyUserChange:SFUserAccountManagerDidChangeUserNotification withUser:currentAccount andChange:userAccountChange];
-        }
+   
+    if (accountDataChange != SFUserAccountDataChangeUnknown) {
+        [self notifyUserDataChange:SFUserAccountManagerDidChangeUserDataNotification withUser:currentAccount andChange:accountDataChange];
+    } else if (userAccountChange != SFUserAccountChangeUnknown) {
+        [self notifyUserChange:SFUserAccountManagerDidChangeUserNotification withUser:currentAccount andChange:userAccountChange];
     }
     return currentAccount;
 }
@@ -1290,11 +1897,11 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
             SFUserAccountIdentity *result = nil;
             NSError* error = nil;
             NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:resultData error:&error];
-            unarchiver.requiresSecureCoding = NO;
+            unarchiver.requiresSecureCoding = YES;
             if (error) {
                 [SFSDKCoreLogger e:[self class] format:@"Failed to init unarchiver for current user identity from user defaults: %@.", error];
             } else {
-                result = [unarchiver decodeObjectForKey:kUserDefaultsLastUserIdentityKey];
+                result = [unarchiver decodeObjectOfClass:[SFUserAccountIdentity class] forKey:kUserDefaultsLastUserIdentityKey];
                 [unarchiver finishDecoding];
                 if (result) {
                     _currentUser = [self userAccountForUserIdentity:result];
@@ -1326,7 +1933,14 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
                 [self willChangeValueForKey:@"currentUser"];
                 _currentUser = user;
                 [self setCurrentUserIdentity:user.accountIdentity];
-                if (user.credentials.domain)
+                
+                BOOL isNativeLogin = self.nativeLoginEnabled && !self.shouldFallbackToWebAuthentication;
+                // Native Login uses a secondary Connected App tied to a specifc community url.  If the
+                // next login is web based it should not try to use that url.
+                // Also skip if the app uses a Welcome/Discovery domain — persisting the My Domain
+                // would pollute the server picker and prevent returning to the discovery page on logout.
+                BOOL isDiscoveryLogin = [SFDomainDiscoveryCoordinator isDiscoveryDomain:self.loginHost];
+                if (user.credentials.domain && !isNativeLogin && !isDiscoveryLogin)
                     self.loginHost = user.credentials.domain;
                 [self didChangeValueForKey:@"currentUser"];
                 userChanged = YES;
@@ -1336,8 +1950,22 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         }
         [_accountsLock unlock];
     }
-    if (userChanged)
+    
+    if (userChanged) {
         [self notifyUserChange:SFUserAccountManagerDidChangeUserNotification withUser:_currentUser andChange:SFUserAccountChangeCurrentUser];
+        
+        SFBiometricAuthenticationManagerInternal *bioAuthManager = SFBiometricAuthenticationManagerInternal.shared;
+        if ([bioAuthManager enabled]) {
+            NSArray *keys = [self.userAccountMap allKeys];
+            for (SFUserAccountIdentity *identity in keys) {
+                // Logout any other user with Biometric Authentication
+                // This is an unexpected logout(s) because we only support one Bio Auth user.
+                if ([bioAuthManager checkForPolicyWithUserId:identity.userId] && ![identity isEqual:[self currentUserIdentity]]) {
+                    [self logoutUser:[self userAccountForUserIdentity:identity] reason:SFLogoutReasonUnexpected];
+                }
+            }
+        }
+    }
 }
 
 - (SFUserAccountIdentity *)currentUserIdentity {
@@ -1357,7 +1985,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     NSUserDefaults *standardDefaults = [NSUserDefaults msdkUserDefaults];
     [_accountsLock lock];
     if (userAccountIdentity) {
-        NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initRequiringSecureCoding:NO];
+        NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
         [archiver encodeObject:userAccountIdentity forKey:kUserDefaultsLastUserIdentityKey];
         [archiver finishEncoding];
         [standardDefaults setObject:archiver.encodedData forKey:kUserDefaultsLastUserIdentityKey];
@@ -1366,36 +1994,6 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
     [_accountsLock unlock];
     [standardDefaults synchronize];
-}
-
-- (void)applyIdData:(SFIdentityData *)idData forUser:(SFUserAccount *)user {
-    if (user) {
-        [_accountsLock lock];
-        user.idData = idData;
-        [self saveAccountForUser:user error:nil];
-        [_accountsLock unlock];
-        [self notifyUserDataChange:SFUserAccountManagerDidChangeUserDataNotification withUser:user andChange:SFUserAccountDataChangeIdData];
-    }
-}
-
-- (void)applyIdDataCustomAttributes:(NSDictionary *)customAttributes forUser:(SFUserAccount *)user {
-    if (user) {
-        [_accountsLock lock];
-        user.idData.customAttributes = customAttributes;
-        [self saveAccountForUser:user error:nil];
-        [_accountsLock unlock];
-        [self notifyUserDataChange:SFUserAccountManagerDidChangeUserDataNotification withUser:user andChange:SFUserAccountDataChangeIdData];
-    }
-}
-
-- (void)applyIdDataCustomPermissions:(NSDictionary *)customPermissions forUser:(SFUserAccount *)user {
-     if (user) {
-        [_accountsLock lock];
-        user.idData.customPermissions = customPermissions;
-        [self saveAccountForUser:user error:nil];
-        [_accountsLock unlock];
-        [self notifyUserDataChange:SFUserAccountManagerDidChangeUserDataNotification withUser:user andChange:SFUserAccountDataChangeIdData];
-     }
 }
 
 - (void)setObjectForUserCustomData:(NSObject <NSCoding> *)object forKey:(NSString *)key andUser:(SFUserAccount *)user {
@@ -1412,18 +2010,6 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     return [userDefaults stringForKey:kUserDefaultsLastUserCommunityIdKey];
 }
 
-- (void)presentBiometricEnrollment:(nullable SFSDKAppLockViewConfig *)config {
-    [SFSecurityLockout presentBiometricEnrollment:config];
-}
-
-- (BOOL)deviceHasBiometric {
-    return [[SFPasscodeManager sharedManager] deviceHasBiometric];
-}
-
-- (SFBiometricUnlockState)biometricUnlockState {
-    return [SFSecurityLockout biometricState];
-}
-
 #pragma mark - private methods
 //called by SP app to kick off idp authentication
 - (BOOL)authenticateUsingIDP:(SFSDKAuthRequest *)request completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock {
@@ -1433,12 +2019,13 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     authSession.authFailureCallback = failureBlock;
     authSession.authSuccessCallback = completionBlock;
     authSession.oauthCoordinator.delegate = self;
-    self.authSession = authSession;
+    NSString *sceneId = request.scene.session.persistentIdentifier;
+    self.authSessions[sceneId] = authSession;
     if (request.idpInitiatedAuth && request.userHint) {
         //no need to show login selection view
-        self.authSession.oauthRequest.appDisplayName = self.appDisplayName;
-        [SFSDKIDPAuthHelper invokeIDPApp:self.authSession completion:^(BOOL result) {
-           [SFSDKCoreLogger d:[self class] format:@"Launced IDP App"];
+        self.authSessions[sceneId].oauthRequest.appDisplayName = self.appDisplayName;
+        [SFSDKIDPAuthHelper invokeIDPApp:self.authSessions[sceneId] completion:^(BOOL result) {
+           [SFSDKCoreLogger d:[self class] format:@"Launched IDP App"];
         }];
     } else {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1451,31 +2038,35 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
             }
             controller.appOptions = options;
             controller.selectionFlowDelegate = [SFUserAccountManager sharedInstance];
-            SFSDKWindowContainer *authWindow = [SFSDKWindowManager sharedManager].authWindow;
+            SFSDKWindowContainer *authWindow = [[SFSDKWindowManager sharedManager] authWindow:request.scene];
            
             SFSDKNavigationController *navcontroller = [[SFSDKNavigationController alloc] initWithRootViewController:controller];
             navcontroller.modalPresentationStyle = UIModalPresentationFullScreen;
             [authWindow presentWindowAnimated:NO withCompletion:^{
-               authWindow.viewController.modalPresentationStyle = UIModalPresentationFullScreen;
-               [authWindow.viewController presentViewController:navcontroller animated:YES completion:^{
-               }];
+                authWindow.viewController.modalPresentationStyle = UIModalPresentationFullScreen;
+                [authWindow.viewController presentViewController:navcontroller animated:YES completion:nil];
             }];
         });
     }
-    return self.authSession.isAuthenticating;
+    return self.authSessions[sceneId].isAuthenticating;
 }
 
-- (void)authenticateOnBehalfOfSPApp:(SFUserAccount *)user spAppCredentials:(SFOAuthCredentials *)spAppCredentials {
+- (void)authenticateOnBehalfOfSPApp:(SFUserAccount *)user spAppCredentials:(SFOAuthCredentials *)spAppCredentials authRequest:(SFSDKAuthRequest *)request success:(void(^)(void))successBlock failure:(void(^)(NSError *))failureBlock {
+    if (!request) {
+        request = [self defaultAuthRequest];
+    }
     
-    SFSDKAuthRequest *request = [self defaultAuthRequest];
-    self.authSession = [[SFSDKAuthSession alloc] initWith:request credentials:user.credentials spAppCredentials:spAppCredentials];
-    self.authSession.oauthCoordinator.delegate = self;
-    self.authSession.identityCoordinator.delegate = self;
+    SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:user.credentials spAppCredentials:spAppCredentials];
+    authSession.oauthCoordinator.delegate = self;
+    authSession.identityCoordinator.delegate = self;
+    self.authSessions[authSession.sceneId] = authSession;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf dismissAuthViewControllerIfPresent:^{
-             [strongSelf.authSession.oauthCoordinator beginIDPFlow];
+        [strongSelf dismissAuthViewControllerIfPresentForScene:authSession.oauthRequest.scene completion:^{
+            SFSDK_USE_DEPRECATED_BEGIN
+            [strongSelf.authSessions[authSession.sceneId].oauthCoordinator beginIDPFlow:user success:successBlock failure:failureBlock];
+            SFSDK_USE_DEPRECATED_END
         }];
     });
 }
@@ -1483,7 +2074,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 - (void)populateErrorHandlers {
     __weak typeof (self) weakSelf = self;
     
-    self.errorManager.invalidAuthCredentialsErrorHandlerBlock  = ^(NSError *error, SFSDKAuthSession  *session,NSDictionary *options) {
+    self.errorManager.invalidAuthCredentialsErrorHandlerBlock = ^(NSError *error, SFSDKAuthSession  *session,NSDictionary *options) {
         __strong typeof (weakSelf) strongSelf = weakSelf;
         [SFSDKCoreLogger w:[strongSelf class] format:@"OAuth refresh failed due to invalid grant.  Error code: %ld", (long)error.code];
         session.notifiesDelegatesOfFailure = NO;
@@ -1500,13 +2091,71 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         __strong typeof (weakSelf) strongSelf = weakSelf;
         NSString *alertMessage = [NSString stringWithFormat:[SFSDKResourceUtils localizedString:kAlertConnectionErrorFormatStringKey], [error localizedDescription]];
         NSString *okButton = [SFSDKResourceUtils localizedString:kAlertOkButtonKey];
-        [strongSelf showErrorAlertWithMessage:alertMessage buttonTitle:okButton andCompletion:^() {
+        [strongSelf showErrorAlertWithMessage:alertMessage buttonTitle:okButton scene:session.oauthRequest.scene andCompletion:^() {
             [session.oauthCoordinator stopAuthentication];
-            [strongSelf notifyUserCancelledOrDismissedAuth:session.oauthCoordinator.credentials andAuthInfo:session.authInfo];
-            NSString *host = [[SFSDKLoginHostStorage sharedInstance] loginHostAtIndex:0].host;
-            session.oauthRequest.loginHost = host;
-            strongSelf.loginHost = host;
-            [strongSelf restartAuthentication:session];
+            [strongSelf notifyUserCancelledOrDismissedAuth:session.oauthCoordinator.credentials andAuthInfo:session.oauthCoordinator.authInfo];
+            NSString *failingHost = session.oauthRequest.loginHost;
+            SFSDKLoginHostStorage *storage = [SFSDKLoginHostStorage sharedInstance];
+            SFSDKLoginHost *failing = [storage loginHostForHostAddress:failingHost];
+            // Only auto-remove the host when the error is a strong signal that the host itself
+            // is unusable: a URL-syntax problem, an ATS rejection, or an OAuth invalid-URL.
+            // These are reliably under our control and not produced by network conditions.
+            //
+            // Codes that look host-specific but are actually ambiguous on real networks are
+            // intentionally NOT treated as strong signals:
+            //   - NSURLErrorCannotFindHost / NSURLErrorDNSLookupFailed — captive portals
+            //     (hotel / airport / coffee-shop Wi-Fi) routinely hijack DNS and return these
+            //     for perfectly valid enterprise hosts. Auto-removing on DNS errors would
+            //     silently and permanently delete a user's custom org host the first time
+            //     they open the app behind a captive portal.
+            //   - NSURLErrorTimedOut / NSURLErrorCannotConnectToHost / NSURLErrorNotConnectedToInternet
+            //     / NSURLErrorNetworkConnectionLost / roaming-off / data-not-allowed —
+            //     transient connectivity failures against a host that is otherwise fine.
+            //
+            // Both buckets fall through to the "leave the host in storage" branch.
+            BOOL strongBadHostSignal = NO;
+            if ([error.domain isEqualToString:kSFOAuthErrorDomain] && error.code == kSFOAuthErrorInvalidURL) {
+                strongBadHostSignal = YES;
+            } else if ([error.domain isEqualToString:NSURLErrorDomain]) {
+                switch (error.code) {
+                    case NSURLErrorBadURL:
+                    case NSURLErrorUnsupportedURL:
+                    case NSURLErrorAppTransportSecurityRequiresSecureConnection:
+                        strongBadHostSignal = YES;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if (failing && failing.isDeletable && strongBadHostSignal) {
+                NSUInteger index = [storage indexOfLoginHost:failing];
+                if (index != NSNotFound) {
+                    [storage removeLoginHostAtIndex:index];
+                }
+            } else if (!failing) {
+                [SFSDKCoreLogger w:[strongSelf class] format:@"Failing host not found in storage; skipping removal."];
+            } else if (failing && failing.isDeletable && !strongBadHostSignal) {
+                [SFSDKCoreLogger d:[strongSelf class] format:@"Failing host left in storage; error %@/%ld is ambiguous (likely transient).", error.domain, (long)error.code];
+            }
+            // Choose a recovery host. Prefer the snapshot of the host the user was working on before
+            // the bad host change; fall back to the first entry in storage. The fallback can be unsafe
+            // in one edge case: if the failing host was just removed above AND it was the only entry,
+            // or if MDM `onlyShowAuthorizedHosts` is enabled with an empty MDM host list, storage may
+            // be empty here — `loginHostAtIndex:0` would raise NSRangeException. Guard the index call.
+            NSString *prev = strongSelf.previousLoginHost;
+            NSString *recoveryHost = nil;
+            if (prev && [storage loginHostForHostAddress:prev]) {
+                recoveryHost = prev;
+            } else if ([storage numberOfLoginHosts] > 0) {
+                recoveryHost = [storage loginHostAtIndex:0].host;
+            }
+            if (recoveryHost) {
+                session.oauthRequest.loginHost = recoveryHost;
+                strongSelf.loginHost = recoveryHost;
+                [strongSelf restartAuthentication:session];
+            } else {
+                [SFSDKCoreLogger e:[strongSelf class] format:@"No recovery host available; skipping restart."];
+            }
         }];
     };
     
@@ -1515,8 +2164,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 
         NSString *message =[NSString stringWithFormat:[SFSDKResourceUtils localizedString:kAlertConnectionErrorFormatStringKey], [error localizedDescription]];
         NSString *retryButton = [SFSDKResourceUtils localizedString:kAlertOkButtonKey];
-        [strongSelf showErrorAlertWithMessage:message buttonTitle:retryButton   andCompletion:^() {
-            //TODO: RestartAuth
+        [strongSelf showErrorAlertWithMessage:message buttonTitle:retryButton scene:session.oauthRequest.scene andCompletion:^() {
             [strongSelf restartAuthentication:session];
         }];
     };
@@ -1528,7 +2176,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     };
 }
 
-- (void)showErrorAlertWithMessage:(NSString *)alertMessage buttonTitle:(NSString *)buttonTitle andCompletion:(void(^)(void))completionBlock {
+- (void)showErrorAlertWithMessage:(NSString *)alertMessage buttonTitle:(NSString *)buttonTitle scene:(UIScene *)scene andCompletion:(void(^)(void))completionBlock {
     __weak typeof (self) weakSelf = self;
     SFSDKAlertMessage *message = [SFSDKAlertMessage messageWithBlock:^(SFSDKAlertMessageBuilder *builder) {
         builder.alertTitle = [SFSDKResourceUtils localizedString:kAlertErrorTitleKey];
@@ -1539,7 +2187,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         };
     }];
     dispatch_async(dispatch_get_main_queue(), ^{
-        weakSelf.alertDisplayBlock(message, SFSDKWindowManager.sharedManager.authWindow);
+        weakSelf.alertDisplayBlock(message, [SFSDKWindowManager.sharedManager authWindow:scene]);
     });
 }
 
@@ -1557,17 +2205,27 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         };
     }];
     dispatch_async(dispatch_get_main_queue(), ^{
-         weakSelf.alertDisplayBlock(message, SFSDKWindowManager.sharedManager.authWindow);
+        weakSelf.alertDisplayBlock(message, [SFSDKWindowManager.sharedManager authWindow:session.oauthRequest.scene]);
     });
 }
 
 - (void)loggedIn:(BOOL)fromOffline coordinator:(SFOAuthCoordinator *)coordinator notifyDelegatesOfFailure:(BOOL)shouldNotify {
     if (!fromOffline) {
-        SFIdentityCoordinator *identityCoordinator = [[SFIdentityCoordinator alloc] initWithAuthSession:coordinator.authSession];
-        self.authSession.identityCoordinator = identityCoordinator;
-        self.authSession.notifiesDelegatesOfFailure = shouldNotify;
-        identityCoordinator.delegate = self;
-        [identityCoordinator initiateIdentityDataRetrieval];
+        self.authSessions[coordinator.authSession.sceneId].notifiesDelegatesOfFailure = shouldNotify;
+        [self shouldBlockUser:coordinator.credentials completion:^(BOOL blockUser) {
+            if (blockUser) {
+                [SFSDKCoreLogger e:[self class] message:@"Salesforce integration users are prohibited from successfully authenticating"];
+                NSError *error = [NSError errorWithDomain:kSFOAuthErrorDomain code:kSFOAuthErrorAccessDenied userInfo:nil];
+                [self handleFailure:error session:coordinator.authSession];
+            } else {
+                SFIdentityCoordinator *identityCoordinator = [[SFIdentityCoordinator alloc] initWithAuthSession:coordinator.authSession];
+                self.authSessions[coordinator.authSession.sceneId].identityCoordinator = identityCoordinator;
+                identityCoordinator.delegate = self;
+                [identityCoordinator initiateIdentityDataRetrieval];
+            }
+        } errorBlock:^(NSError *error) {
+            [self handleFailure:error session:coordinator.authSession];
+        }];
     } else {
         [self retrievedIdentityData:coordinator.authSession];
     }
@@ -1578,65 +2236,150 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     // already exists.
     NSAssert(authSession.identityCoordinator.idData != nil, @"Identity data should not be nil/empty at this point.");
     SFIdentityCoordinator *identityCoordinator = authSession.identityCoordinator;
-    NSNumber *biometricUnlockKey = [identityCoordinator.idData.customAttributes objectForKey:@"BIOMETRIC_UNLOCK"];
-    BOOL biometricUnlockAvailable = (biometricUnlockKey == nil) ? YES : [biometricUnlockKey boolValue];
-    __weak typeof(self) weakSelf = self;
-    [self dismissAuthViewControllerIfPresent:^{
-          __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (authSession.authInfo.authType != SFOAuthTypeRefresh) {
-           [SFSecurityLockout setPasscodeViewConfig:authSession.oauthRequest.appLockViewControllerConfig];
-           [SFSecurityLockout setLockScreenSuccessCallbackBlock:^(SFSecurityLockoutAction action) {
-               [strongSelf finalizeAuthCompletion:authSession];
-           }];
-           [SFSecurityLockout setLockScreenFailureCallbackBlock:^{
-               strongSelf.authSession.notifiesDelegatesOfFailure = YES;
-               [strongSelf handleFailure:authSession.authError session:strongSelf.authSession];
-           }];
-           // Check to see if a passcode needs to be created or updated, based on passcode policy data from the
-           // identity service.
-           [SFSecurityLockout setInactivityConfiguration:identityCoordinator.idData.mobileAppPinLength
-                                             lockoutTime:(identityCoordinator.idData.mobileAppScreenLockTimeout * 60)
-                                        biometricAllowed:biometricUnlockAvailable];
-       } else {
-           [strongSelf finalizeAuthCompletion:authSession];
-       }
-    }];
+    BOOL hasMobilePolicy = identityCoordinator.idData.mobilePoliciesConfigured;
+    int lockTimeout = identityCoordinator.idData.mobileAppScreenLockTimeout;
+    NSDictionary *customAttributes = identityCoordinator.idData.customAttributes;
+    BOOL hasBioAuthPolicy = (customAttributes != nil) && customAttributes[kBiometricAuthenticationPolicyKey];
+    int sessionTimeout = (customAttributes != nil) && customAttributes[kBiometricAuthenticationTimeoutKey];
+    SFBiometricAuthenticationManagerInternal *bioAuthManager = [SFBiometricAuthenticationManagerInternal shared];
+    // Store current user credentials in case they need to be revoked for Biometric Authentication
+    SFOAuthCredentials *preLoginCredentials = self.currentUser.credentials;
     
-   
+    // Set session timeout to the lowest value (15 minutes) of not specified.
+    if (hasBioAuthPolicy && (sessionTimeout < 1)) {
+        sessionTimeout = 15;
+    }
+    
+    __weak typeof(self) weakSelf = self;
+    [self dismissAuthViewControllerIfPresentForScene:authSession.oauthRequest.scene completion:^{
+          __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf finalizeAuthCompletion:authSession];
+
+        if (authSession.oauthCoordinator.authInfo.authType != SFOAuthTypeRefresh) {
+            if (hasBioAuthPolicy) {
+                if ([bioAuthManager locked]) {
+                    [bioAuthManager unlockPostProcessing];
+                }
+                
+                [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureBioAuth forUser:strongSelf.currentUser];
+                [bioAuthManager storePolicyWithUserAccount:strongSelf.currentUser hasMobilePolicy:hasBioAuthPolicy sessionTimeout:sessionTimeout];
+                if (![bioAuthManager hasBiometricOptedIn] && bioAuthManager.automaticPresentation) {
+                    [bioAuthManager presentOptInDialogWithViewController:[[SFSDKWindowManager sharedManager] mainWindow:authSession.oauthRequest.scene].topViewController];
+                }
+
+                if (preLoginCredentials != nil && ![preLoginCredentials.refreshToken isEqualToString:self.currentUser.credentials.refreshToken]) {
+                    
+                    id<SFSDKOAuthProtocol> authClient = self.authClient();
+                    [authClient revokeRefreshToken:preLoginCredentials reason:SFLogoutReasonRefreshTokenRotated];
+                }
+            } else if (hasMobilePolicy) {
+                [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureScreenLock forUser:strongSelf.currentUser];
+                [[SFScreenLockManagerInternal shared] storeMobilePolicyWithUserAccount:strongSelf.currentUser hasMobilePolicy:hasMobilePolicy lockTimeout:lockTimeout];
+            }
+        }
+    }];
+    [self dismissAuthViewControllerIfPresent];
 }
 
 - (void)handleFailure:(NSError *)error session:(SFSDKAuthSession *)authSession {
-    
-    if(authSession.authFailureCallback) {
-        authSession.authFailureCallback(authSession.authInfo,error);
+    if (authSession.authFailureCallback) {
+        authSession.authFailureCallback(authSession.oauthCoordinator.authInfo, error);
     }
   
     if (authSession.notifiesDelegatesOfFailure) {
-         __weak typeof(self) weakSelf = self;
+        __block BOOL errorWasHandledByDelegate = NO;
+        __weak typeof(self) weakSelf = self;
         [self enumerateDelegates:^(id <SFUserAccountManagerDelegate> delegate) {
             if ([delegate respondsToSelector:@selector(userAccountManager:error:info:)]) {
-                [delegate userAccountManager:weakSelf error:error info:authSession.authInfo];
+                BOOL returnVal = [delegate userAccountManager:weakSelf error:error info:authSession.oauthCoordinator.authInfo];
+                errorWasHandledByDelegate |= returnVal;
             }
         }];
+
+        if (!errorWasHandledByDelegate) {
+           BOOL errorWasHandledBySDK = [self.errorManager processAuthError:error authContext:authSession options:nil];
+            if (!errorWasHandledBySDK) {
+                [SFSDKCoreLogger e:[self class] format:@"Unhandled Error during authentication. Handle the error using   [SFUserAccountManagerDelegate userAccountManager:error:info:] and return true. %@", error.localizedDescription];
+            }
+        }
     }
-    [self resetAuthentication];
+    [self resetAuthentication:authSession];
 }
 
 - (void)resetAuthentication {
-    
     [_accountsLock lock];
-    if (self.authSession.authInfo.authType == SFOAuthTypeUserAgent) {
-        [self.authSession.oauthCoordinator.view removeFromSuperview];
+    for (NSString *key in self.authSessions.allKeys) {
+        SFSDKAuthSession *authSession = self.authSessions[key];
+        if (authSession.oauthCoordinator.authInfo.authType == SFOAuthTypeUserAgent) {
+            [authSession.oauthCoordinator.view removeFromSuperview];
+        }
+        NSString *sceneId = authSession.sceneId;
+        [self.authSessions[sceneId].oauthCoordinator stopAuthentication];
+        self.authSessions[sceneId].identityCoordinator.idData = nil;
+        self.authSessions[sceneId].isAuthenticating = NO;
+        [self.authSessions removeObject:sceneId];
     }
-    [self.authSession.oauthCoordinator stopAuthentication];
-    self.authSession.identityCoordinator.idData = nil;
-    self.authSession.isAuthenticating = NO;
-    self.authSession = nil;
     [_accountsLock unlock];
 }
 
-- (void)finalizeAuthCompletion:(SFSDKAuthSession *)authSession {
+- (void)resetAuthentication:(SFSDKAuthSession *)authSession {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self resetAuthentication:authSession];
+        });
+        return;
+    }
+    
+    [_accountsLock lock];
+    if (authSession.oauthCoordinator.authInfo.authType == SFOAuthTypeUserAgent) {
+        [authSession.oauthCoordinator.view removeFromSuperview];
+    }
+    NSString *sceneId = authSession.sceneId;
+    [self.authSessions[sceneId].oauthCoordinator stopAuthentication];
+    self.authSessions[sceneId].identityCoordinator.idData = nil;
+    self.authSessions[sceneId].isAuthenticating = NO;
+    [self.authSessions removeObject:sceneId];
+    [_accountsLock unlock];
+}
 
+/// Returns the single B-marker that best describes why browser login was used,
+/// or nil if browser login was not used (e.g. refresh flows or non-browser initial auth).
+/// Priority: B3 > B2 > B4 > B1.
+- (NSString *)computeBMarkerForAuthSession:(SFSDKAuthSession *)authSession completedAuthType:(SFOAuthType)completedAuthType {
+    if (completedAuthType != SFOAuthTypeAdvancedBrowser) {
+        return nil;
+    }
+    if (authSession.oauthRequest.loginAsAdmin) {
+        return kSFAppFeatureBrowserLoginForAdmin;        // B3 — Login for Admin path
+    }
+    if (authSession.oauthRequest.useBrowserAuth) {
+        return kSFAppFeatureBrowserLoginMDM;             // B2 — MDM-required browser auth
+    }
+    if ([SalesforceSDKManager sharedManager].sdk_forceAdvancedAuthentication) {
+        return kSFAppFeatureBrowserLoginForceFlag;       // B4 — forceAdvancedAuthentication SDK flag
+    }
+    return kSFAppFeatureBrowserLoginServerAuthConfig;   // B1 — server auth-config required browser login
+}
+
+/// Returns the single L-marker for the login server type used in this session.
+/// L3 must be evaluated before the WD global flag is cleared.
+- (NSString *)computeLMarkerForDomain:(NSString *)domain usedWelcomeDiscovery:(BOOL)usedWelcomeDiscovery {
+    if (usedWelcomeDiscovery) {
+        return kSFAppFeatureLoginServerWelcomeDiscovery;              // L3
+    }
+    if ([SFSDKAuthConfigUtil isProductionLoginHost:domain]) {
+        return kSFAppFeatureLoginServerProduction;                    // L1 — login.salesforce.com or login.*.salesforce.com
+    }
+    if ([domain isEqualToString:kSFSDKSandboxLoginURL]) {
+        return kSFAppFeatureLoginServerSandbox;                       // L2 — test.salesforce.com
+    }
+    if ([SFSDKAuthConfigUtil isMyDomainHost:domain]) {
+        return kSFAppFeatureLoginServerMyDomain;                      // L4 — *.my.salesforce.com or *.my.*.salesforce.com
+    }
+    return kSFAppFeatureLoginServerOther;                             // L5
+}
+
+- (void)finalizeAuthCompletion:(SFSDKAuthSession *)authSession {
     // Apply the credentials that will ensure there is a user and that this
     // current user as the proper credentials.
     SFUserAccount *userAccount = [self applyCredentials:authSession.oauthCoordinator.credentials withIdData:authSession.identityCoordinator.idData];
@@ -1650,7 +2393,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
         NSError *error = [NSError errorWithDomain:@"SFUserAccountManager"
                                              code:1005
                                          userInfo:@{ NSLocalizedDescriptionKey : reason } ];
-        self.authSession.notifiesDelegatesOfFailure = YES;
+        authSession.notifiesDelegatesOfFailure = YES;
         [self handleFailure:error session:authSession];
         return;
     }
@@ -1658,7 +2401,154 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     // Notify the session is ready.
     [self initAnalyticsManager];
     [self handleAnalyticsAddUserEvent:authSession account:userAccount];
-    
+
+    // Promote auth-method feature flags to the now-known user account.
+    // Write the per-user flag and clear the transient global flag so it does not
+    // bleed into other users' User-Agent strings.
+    SFOAuthType completedAuthType = authSession.oauthCoordinator.authInfo.authType;
+    if (completedAuthType == SFOAuthTypeAdvancedBrowser) {
+        [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureSafariBrowserForLogin forUser:userAccount];
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureTokenMigration forUser:userAccount];
+    } else if (completedAuthType == SFOAuthTypeRefreshTokenMigration) {
+        // Migration exchanges the token but does not change how the user originally
+        // authenticated. Preserve the existing per-user BW flag rather than clearing it.
+        [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureTokenMigration forUser:userAccount];
+    } else if (completedAuthType != SFOAuthTypeRefresh) {
+        // Full re-login: clear both BW and TM (migration flag does not apply to fresh logins).
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureSafariBrowserForLogin forUser:userAccount];
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureTokenMigration forUser:userAccount];
+    } else {
+        // Token refresh: clear BW only. TM must persist across refreshes per spec.
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureSafariBrowserForLogin forUser:userAccount];
+    }
+    [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureSafariBrowserForLogin];
+    // TM is a per-user-only flag; clear any global residue so it does not bleed into other users.
+    [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureTokenMigration];
+
+    // B-markers: register exactly one "why browser was used" marker per-user alongside BW.
+    // Migration does not change how the user originally authenticated, so preserve existing
+    // B-markers unchanged (same rationale as preserving BW above).
+    if (completedAuthType != SFOAuthTypeRefreshTokenMigration) {
+        NSArray<NSString *> *allBMarkers = @[kSFAppFeatureBrowserLoginServerAuthConfig,
+                                             kSFAppFeatureBrowserLoginMDM,
+                                             kSFAppFeatureBrowserLoginForAdmin,
+                                             kSFAppFeatureBrowserLoginForceFlag];
+        NSString *bMarker = [self computeBMarkerForAuthSession:authSession completedAuthType:completedAuthType];
+        for (NSString *marker in allBMarkers) {
+            if (bMarker && [marker isEqualToString:bMarker]) {
+                [SFSDKAppFeatureMarkers registerAppFeature:marker forUser:userAccount];
+            } else {
+                [SFSDKAppFeatureMarkers unregisterAppFeature:marker forUser:userAccount];
+            }
+        }
+    }
+
+    if (completedAuthType != SFOAuthTypeRefresh) {
+        // Check the transient global flag rather than re-deriving from credentials.domain, which by
+        // this point has been replaced with the resolved org domain (no longer contains "/discovery").
+        BOOL usedWelcomeDiscovery = [[SFSDKAppFeatureMarkers appFeatures] containsObject:kSFAppFeatureWelcomeDiscovery];
+        if (usedWelcomeDiscovery) {
+            [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureWelcomeDiscovery forUser:userAccount];
+        } else {
+            [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureWelcomeDiscovery forUser:userAccount];
+        }
+
+        // L-markers: register exactly one "which login server" marker per-user.
+        // Must be evaluated before the WD global is cleared below so that L3 is detectable.
+        NSArray<NSString *> *allLMarkers = @[kSFAppFeatureLoginServerProduction,
+                                              kSFAppFeatureLoginServerSandbox,
+                                              kSFAppFeatureLoginServerMyDomain,
+                                              kSFAppFeatureLoginServerWelcomeDiscovery,
+                                              kSFAppFeatureLoginServerOther];
+        NSString *lMarker = [self computeLMarkerForDomain:authSession.oauthCoordinator.credentials.domain
+                                  usedWelcomeDiscovery:usedWelcomeDiscovery];
+        for (NSString *marker in allLMarkers) {
+            if ([marker isEqualToString:lMarker]) {
+                [SFSDKAppFeatureMarkers registerAppFeature:marker forUser:userAccount];
+            } else {
+                [SFSDKAppFeatureMarkers unregisterAppFeature:marker forUser:userAccount];
+            }
+        }
+
+        // WD: clear the transient global flag after promoting to per-user
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureWelcomeDiscovery];
+
+        // QR: write per-user and clear the transient global flag
+        BOOL usedQrLogin = [[SFSDKAppFeatureMarkers appFeatures] containsObject:kSFAppFeatureQrCodeLogin];
+        if (usedQrLogin) {
+            [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureQrCodeLogin forUser:userAccount];
+            [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureQrCodeLogin];
+        } else {
+            [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureQrCodeLogin forUser:userAccount];
+        }
+
+        // A-markers: promote exactly one per-user and clear all A-marker globals.
+        // Migration preserves the existing per-user A-marker (auth method unchanged).
+        NSArray<NSString *> *allAMarkers = @[kSFAppFeatureAuthTypeWebServerNonHybrid,
+                                              kSFAppFeatureAuthTypeWebServerHybrid,
+                                              kSFAppFeatureAuthTypeUserAgentNonHybrid,
+                                              kSFAppFeatureAuthTypeUserAgentHybrid,
+                                              kSFAppFeatureAuthTypeNative];
+        if (completedAuthType != SFOAuthTypeRefreshTokenMigration) {
+            NSString *aMarker = nil;
+            for (NSString *marker in allAMarkers) {
+                if ([[SFSDKAppFeatureMarkers appFeatures] containsObject:marker]) {
+                    aMarker = marker;
+                    break;
+                }
+            }
+            for (NSString *marker in allAMarkers) {
+                if ([marker isEqualToString:aMarker]) {
+                    [SFSDKAppFeatureMarkers registerAppFeature:marker forUser:userAccount];
+                } else {
+                    [SFSDKAppFeatureMarkers unregisterAppFeature:marker forUser:userAccount];
+                }
+            }
+        }
+        for (NSString *marker in allAMarkers) {
+            [SFSDKAppFeatureMarkers unregisterAppFeature:marker];
+        }
+
+        // AA: write per-user on non-refresh logins only
+        BOOL usedAppAttestation = [[SFSDKAppFeatureMarkers appFeatures] containsObject:kSFAppFeatureAppAttestation];
+        if (usedAppAttestation) {
+            [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureAppAttestation forUser:userAccount];
+        } else {
+            [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureAppAttestation forUser:userAccount];
+        }
+    }
+    // Always clear the AA transient global regardless of auth type
+    [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureAppAttestation];
+
+    // DPoP: register unconditionally on every completed session where the server issued
+    // a DPoP-bound token (initial login OR refresh) — token_type is a per-session property.
+    // The else branch is a deliberate broadening beyond the original register-only logic: any
+    // completed session that comes back non-DPoP (e.g. a downgradeFromDPoP migration) must clear
+    // the marker too, or a session that has rolled back to Bearer would keep reporting DP. This is
+    // idempotent and applies to any non-DPoP completion, not just downgrade.
+    if ([SFSDKDPoPRequestDecorator isDPoPTokenType:userAccount.credentials.tokenType]) {
+        [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureDPoP forUser:userAccount];
+    } else {
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureDPoP forUser:userAccount];
+    }
+
+    // JT/OT: token format — written on every completed session (credentials may change on migration)
+    if ([authSession.oauthCoordinator.credentials.tokenFormat isEqualToString:@"jwt"]) {
+        [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureTokenFormatJwt forUser:userAccount];
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureTokenFormatOpaque forUser:userAccount];
+    } else {
+        [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureTokenFormatOpaque forUser:userAccount];
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureTokenFormatJwt forUser:userAccount];
+    }
+
+    // BN: beacon child app — written on every completed session
+    if (authSession.oauthCoordinator.credentials.beaconChildConsumerKey != nil) {
+        [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureBeacon forUser:userAccount];
+    } else {
+        [SFSDKAppFeatureMarkers unregisterAppFeature:kSFAppFeatureBeacon forUser:userAccount];
+    }
+
+
     // Async call, ignore if theres a failure. If success save the user photo locally.
     [self retrieveUserPhotoIfNeeded:userAccount];
     BOOL shouldNotify = YES;
@@ -1668,45 +2558,64 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     }
 
     shouldNotify = authSession.oauthRequest.authenticateRequestFromSPApp?(authSession.oauthRequest.authenticateRequestFromSPApp && self.currentUser == nil):YES;
-    SFOAuthInfo *authInfo = authSession.authInfo;
+    SFOAuthInfo *authInfo = authSession.oauthCoordinator.authInfo;
     
     if (authSession.authSuccessCallback) {
-        authSession.authSuccessCallback(authSession.authInfo,userAccount);
+        authSession.authSuccessCallback(authInfo, userAccount);
     }
     //notify for all login flows except during an SP apps login request.
     if (shouldNotify) {
         [self notifyLoginCompletion:userAccount authInfo:authInfo];
     }
     
-    
     if (!authSession.oauthRequest.authenticateRequestFromSPApp) {
         [self resetAuthentication];
     }
-
 }
+
 - (void)notifyLoginCompletion:(SFUserAccount *)userAccount authInfo:(SFOAuthInfo *)authInfo {
      
      NSDictionary *userInfo = @{kSFNotificationUserInfoAccountKey: userAccount,
                                 kSFNotificationUserInfoAuthTypeKey: authInfo};
-     if (self.authSession.authInfo.authType != SFOAuthTypeRefresh) {
-         [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserDidLogIn
-                                                             object:self
-                                                           userInfo:userInfo];
-     }  else if (self.authSession.authInfo.authType == SFOAuthTypeRefresh) {
+     if (authInfo.authType == SFOAuthTypeRefresh) {
          [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserDidRefreshToken
                                                              object:self
                                                            userInfo:userInfo];
+     } else if (authInfo.authType == SFOAuthTypeRefreshTokenMigration) {
+         [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserDidMigrateRefreshToken
+                                                             object:self
+                                                           userInfo:userInfo];
+     } else {
+         [[NSNotificationCenter defaultCenter] postNotificationName:kSFNotificationUserDidLogIn
+                                                             object:self
+                                                           userInfo:userInfo];
      }
-    
 }
 
 - (void)retrieveUserPhotoIfNeeded:(SFUserAccount *)account {
     if (account.idData.thumbnailUrl) {
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:account.idData.thumbnailUrl];
         [request setHTTPMethod:@"GET"];
-        [request setValue:[NSString stringWithFormat:kHttpAuthHeaderFormatString, account.credentials.accessToken] forHTTPHeaderField:kHttpHeaderAuthorization];
+        NSError *authError = nil;
+        BOOL ok = [SFSDKDPoPRequestDecorator applyAuthHeaders:request
+                                                        scope:account.credentials.identifier
+                                                  accessToken:account.credentials.accessToken
+                                                    tokenType:account.credentials.tokenType
+                                                        error:&authError];
+        if (!ok) {
+            [SFSDKCoreLogger e:[self class] format:@"User photo: failed to stamp authorization headers: %@", authError.localizedDescription];
+            return;
+        }
         SFNetwork *network = [SFNetwork sharedEphemeralInstance];
         [network sendRequest:request  dataResponseBlock:^(NSData *data, NSURLResponse *response, NSError *error){
+            // Gate harvest on DPoP credentials only — Bearer logins must not write to the
+            // DPoP nonce cache even if the photo origin returns a stray DPoP-Nonce header.
+            if ([SFSDKDPoPRequestDecorator isDPoPTokenType:account.credentials.tokenType]
+                && [[SalesforceSDKManager sharedManager] useDPoP]) {
+                [SFSDKDPoPRequestDecorator harvestNonceFromResponse:response
+                                                         requestURL:request.URL
+                                                              scope:account.credentials.identifier];
+            }
             if (error) {
                 [SFSDKCoreLogger w:[self class] format:@"Error while trying to retrieve user photo: %ld %@", (long) error.code, error.localizedDescription];
                 return;
@@ -1719,7 +2628,7 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 - (void)handleAnalyticsAddUserEvent:(SFSDKAuthSession *)authSession account:(SFUserAccount *) userAccount {
-    if (authSession.authInfo.authType == SFOAuthTypeRefresh) {
+    if (authSession.oauthCoordinator.authInfo.authType == SFOAuthTypeRefresh) {
         [SFSDKEventBuilderHelper createAndStoreEvent:@"tokenRefresh" userAccount:userAccount className:NSStringFromClass([self class]) attributes:nil];
     } else {
 
@@ -1748,10 +2657,16 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     [analyticsManager updateLoggingPrefs];
 }
 
+- (void)sceneDidDisconnect:(NSNotification *)notification {
+    UIScene *scene = (UIScene *)notification.object;
+    [self.authSessions removeObject:scene.session.persistentIdentifier];
+}
+
 #pragma mark Switching Users
 - (void)switchToNewUserWithCompletion:(void (^)(NSError *error, SFUserAccount * currentAccount))completion {
     SFUserAccount *prevUser = self.currentUser;
-    if (!self.currentUser) {
+    BOOL nativeLoginFallback = self.nativeLoginEnabled && self.shouldFallbackToWebAuthentication;
+    if (!self.currentUser && !nativeLoginFallback) {
         NSError *error = [[NSError alloc] initWithDomain:kSFSDKUserAccountManagerErrorDomain
                                                     code:SFSDKUserAccountManagerError
                                                 userInfo:@{
@@ -1775,6 +2690,14 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 - (void)switchToUser:(SFUserAccount *)newCurrentUser {
+    SFBiometricAuthenticationManagerInternal *bioAuthManager = [SFBiometricAuthenticationManagerInternal shared];
+    SFScreenLockManagerInternal *screenLockManager = [SFScreenLockManagerInternal shared];
+    if ([bioAuthManager checkForPolicyWithUserId:newCurrentUser.credentials.userId]) {
+        [bioAuthManager lock];
+    } else if ([screenLockManager checkForPolicyWithUserId:newCurrentUser.credentials.userId]) {
+        [screenLockManager lock];
+    }
+    
     if ([self.currentUser.accountIdentity isEqual:newCurrentUser.accountIdentity]) {
         [SFSDKCoreLogger w:[self class] format:@"%@ new user identity is the same as the current user.  No action taken.", NSStringFromSelector(_cmd)];
     } else {
@@ -1811,9 +2734,6 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 #pragma mark - User Change Notifications
-- (void)userChanged:(SFUserAccount *)user change:(SFUserAccountDataChange)change {
-    [self notifyUserDataChange:SFUserAccountManagerDidChangeUserDataNotification withUser:user andChange:change];
-}
 
 - (void)notifyUserDataChange:(NSString *)notificationName withUser:(SFUserAccount *)user andChange:(SFUserAccountDataChange)change {
     if (user) {
@@ -1864,43 +2784,74 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
 }
 
 - (void)presentLoginView:(SFSDKAuthViewHolder *)viewHandler {
-   
-    [[SFSDKWindowManager sharedManager].authWindow presentWindow];
     void (^presentViewBlock)(void) = ^void() {
-        if (!viewHandler.isAdvancedAuthFlow) {
-            UIViewController *controllerToPresent = [[SFSDKNavigationController  alloc]  initWithRootViewController:viewHandler.loginController];
+        if (self.nativeLoginEnabled && !self.shouldFallbackToWebAuthentication) {
+            UIViewController *multiWindowNativeLoginVC = [[SalesforceSDKManager sharedManager].nativeLoginViewControllers objectForKey:viewHandler.scene.session.persistentIdentifier];
+            UIViewController *nativeLogin = multiWindowNativeLoginVC ? multiWindowNativeLoginVC : [[[SalesforceSDKManager sharedManager] nativeLoginViewControllers] objectForKey:kSFDefaultNativeLoginViewControllerKey];
+            UIViewController *controllerToPresent = [[SFSDKNavigationController alloc] initWithRootViewController:nativeLogin];
+            // Hide the nav bar for custom native login views. SFLoginViewController hides it
+            // internally, but custom VCs don't — without this, a Salesforce-blue nav bar appears
+            // on top of the native login view on re-presentation (e.g. after fallback to web auth).
+            [(UINavigationController *)controllerToPresent setNavigationBarHidden:YES animated:NO];
             controllerToPresent.modalPresentationStyle = UIModalPresentationFullScreen;
-            [[SFSDKWindowManager sharedManager].authWindow.viewController presentViewController:controllerToPresent animated:NO completion:^{
+            [[[SFSDKWindowManager sharedManager] authWindow:viewHandler.scene].viewController presentViewController:controllerToPresent animated:NO completion:^{ }];
+        }
+        else if (!viewHandler.isAdvancedAuthFlow) {
+            UIViewController *controllerToPresent = [[SFSDKNavigationController alloc] initWithRootViewController:viewHandler.loginController];
+            if(!(self.nativeLoginEnabled && self.shouldFallbackToWebAuthentication)) {
+                controllerToPresent.modalPresentationStyle = UIModalPresentationFullScreen;
+            }
+            [[[SFSDKWindowManager sharedManager] authWindow:viewHandler.scene].viewController presentViewController:controllerToPresent animated:NO completion:^{
                 NSAssert((nil != [viewHandler.loginController.oauthView superview]), @"No superview for oauth web view invoke [super viewDidLayoutSubviews] in the SFLoginViewController subclass");
             }];
         }
         else {
-            if (@available(iOS 13.0, *)) {
-                SFSDKAuthRootController* authRootController = [[SFSDKAuthRootController alloc] init];
-                [SFSDKWindowManager sharedManager].authWindow.viewController = authRootController;
-                authRootController.modalPresentationStyle = UIModalPresentationFullScreen;
-                viewHandler.session.presentationContextProvider = (id<ASWebAuthenticationPresentationContextProviding>) [SFSDKWindowManager sharedManager].authWindow.viewController;
-            }
-           [viewHandler.session start];
+            SFSDKAuthRootController* authRootController = [[SFSDKAuthRootController alloc] init];
+            [[SFSDKWindowManager sharedManager] authWindow:viewHandler.scene].viewController = authRootController;
+            authRootController.modalPresentationStyle = UIModalPresentationFullScreen;
+            viewHandler.session.presentationContextProvider = (id<ASWebAuthenticationPresentationContextProviding>) [[SFSDKWindowManager sharedManager] authWindow:viewHandler.scene].viewController;
+            [viewHandler.session start];
         }
     };
   
-    //dismiss if already presented and then present
-    UIViewController* presentedViewController = [SFSDKWindowManager sharedManager].authWindow.viewController.presentedViewController;
-    if ([self isAlreadyPresentingLoginController:presentedViewController]) {
-        [presentedViewController dismissViewControllerAnimated:NO completion:^{
+    void (^presentWindowBlock)(void) = ^void() {
+        [[[SFSDKWindowManager sharedManager] authWindow:viewHandler.scene] presentWindow];
+        //dismiss if already presented and then present
+        UIViewController* presentedViewController = [[SFSDKWindowManager sharedManager] authWindow:viewHandler.scene].viewController.presentedViewController;
+        if ([self isAlreadyPresentingLoginController:presentedViewController]) {
+            [presentedViewController dismissViewControllerAnimated:NO completion:^{
+                presentViewBlock();
+            }];
+        } else {
             presentViewBlock();
-        }];
-    } else {
-        presentViewBlock();
-    }
+        }
+    };
+
+    #if TARGET_OS_VISION
+        presentWindowBlock();
+    #else
+        if ([[SalesforceSDKManager sharedManager] isSnapshotPresented:viewHandler.scene]) {
+            [[SalesforceSDKManager sharedManager] dismissSnapshot:viewHandler.scene completion:^{
+                presentWindowBlock();
+            }];
+        } else {
+            presentWindowBlock();
+        }
+    #endif
  }
 
 - (BOOL)isAlreadyPresentingLoginController:(UIViewController*)presentedViewController {
-    return (presentedViewController
-            && !presentedViewController.beingDismissed
-            && [presentedViewController isKindOfClass:[SFSDKNavigationController class]]
-            && [((SFSDKNavigationController*) presentedViewController).topViewController isKindOfClass:[SFLoginViewController class]]);
+    if (!presentedViewController
+        || presentedViewController.beingDismissed
+        || ![presentedViewController isKindOfClass:[SFSDKNavigationController class]]) {
+        return NO;
+    }
+    UIViewController *topViewController = ((SFSDKNavigationController*) presentedViewController).topViewController;
+    // Also match the login-host picker shown as the biometric fallback: when the user declines
+    // Face ID, the Advanced Auth retry must dismiss it before presenting the browser, else the
+    // browser never becomes visible and the user is stranded on the picker.
+    return ([topViewController isKindOfClass:[SFLoginViewController class]]
+            || [topViewController isKindOfClass:[SFSDKLoginHostListViewController class]]);
 }
 
 - (SFLoginViewController *)createLoginViewControllerInstance:(SFOAuthCoordinator *)coordinator {
@@ -1915,5 +2866,40 @@ static NSString * const kSFGenericFailureAuthErrorHandler = @"GenericFailureErro
     return controller;
 }
 
+- (void)shouldBlockUser:(SFOAuthCredentials *)credentials completion:(void(^)(BOOL))completion errorBlock:(void (^)(NSError *))errorBlock  {
+    if (![[SalesforceSDKManager sharedManager] blockSalesforceIntegrationUser]) {
+        completion(NO);
+        return;
+    }
+    
+    NSURL *url = [credentials.instanceUrl URLByAppendingPathComponent:@"/services/oauth2/userinfo"];
+    NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:url];
+    request.cachePolicy = NSURLRequestReloadIgnoringCacheData;
+    request.HTTPMethod = @"GET";
+    request.HTTPShouldHandleCookies = NO;
+    NSError *authError = nil;
+    BOOL ok = [SFSDKDPoPRequestDecorator applyAuthHeaders:request
+                                                    scope:credentials.identifier
+                                              accessToken:credentials.accessToken
+                                                tokenType:credentials.tokenType
+                                                    error:&authError];
+    if (!ok) {
+        [SFSDKCoreLogger e:[self class] format:@"shouldBlockUser: failed to stamp authorization headers: %@", authError.localizedDescription];
+        errorBlock(authError);
+        return;
+    }
+
+    __block NSString *networkIdentifier = [SFNetwork uniqueInstanceIdentifier];
+    SFNetwork *network = [SFNetwork sharedEphemeralInstanceWithIdentifier:networkIdentifier];
+    [network sendRequest:request dataResponseBlock:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            errorBlock(error);
+        } else {
+            NSDictionary *userInfo = [SFJsonUtils objectFromJSONData:data];
+            completion([userInfo[@"is_salesforce_integration_user"] boolValue]);
+        }
+        [SFNetwork removeSharedInstanceForIdentifier:networkIdentifier];
+    }];
+}
 
 @end

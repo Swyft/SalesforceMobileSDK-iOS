@@ -23,10 +23,9 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
-
-@class SFPBKDFData;
 
 /**
  * Default number of PBKDF derivation rounds used to generate a key.
@@ -61,9 +60,9 @@ extern NSUInteger const kSFPBKDFDefaultSaltByteLength;
  * random-generated salt data and its length, the number of derivation rounds, and the
  * derived key length.
  * @param stringToHash Plain-text string used to generate the key.
- * @return `SFPBKDFData` object representing the derived key.
+ * @return The derived key.
  */
-+ (SFPBKDFData *)createPBKDF2DerivedKey:(NSString *)stringToHash;
++ (nullable NSData *)pbkdf2DerivedKey:(NSString *)stringToHash;
 
 /**
  * Creates a PBKDF2-derived key from an input key string, a salt, number of derivation
@@ -72,12 +71,12 @@ extern NSUInteger const kSFPBKDFDefaultSaltByteLength;
  * @param salt Salt to append to the string.
  * @param numDerivationRounds Number of derivation rounds used to generate the key.
  * @param derivedKeyLength Requested derived key length.
- * @return `SFPBKDFData` object representing the derived key.
+ * @return The derived key.
  */
-+ (nullable SFPBKDFData *)createPBKDF2DerivedKey:(NSString *)stringToHash
-                                   salt:(NSData *)salt
-                       derivationRounds:(NSUInteger)numDerivationRounds
-                              keyLength:(NSUInteger)derivedKeyLength;
++ (nullable NSData *)pbkdf2DerivedKey:(NSString *)stringToHash
+                                 salt:(NSData *)salt
+                     derivationRounds:(NSUInteger)numDerivationRounds
+                            keyLength:(NSUInteger)derivedKeyLength;
 
 /**
  * Encrypt the given data using the AES-128 algorithm.
@@ -153,22 +152,6 @@ extern NSUInteger const kSFPBKDFDefaultSaltByteLength;
  * @return `SecKeyRef` object, or `nil` if no matching key is found.
  */
 + (nullable SecKeyRef)getRSAPrivateKeyRefWithName:(NSString *)keyName keyLength:(NSUInteger)length;
-
-/**
- * Encrypt data with given `SecKeyRef` using the RSA `pkcs1` algorithm.
- * @param data Data to encrypt
- * @param keyRef Keyref used in encryption
- * @return `NSData` object containing the encrypted Data, or `nil` if encryption failed.
- */
-+ (nullable NSData*)encryptUsingRSAforData:(NSData *)data withKeyRef:(SecKeyRef)keyRef;
-
-/**
- * Decrypt data with given `SecKeyRef` using the RSA `pkcs1` algorithm.
- * @param data Data to decrypt
- * @param keyRef Keyref used in decryption
- * @return `NSData` object containing the decrypted Data, or `nil` if decryption failed.
- */
-+ (nullable NSData*)decryptUsingRSAforData:(NSData * )data withKeyRef:(SecKeyRef)keyRef;
 
 /**
  * Check for availability of the secure enclave.

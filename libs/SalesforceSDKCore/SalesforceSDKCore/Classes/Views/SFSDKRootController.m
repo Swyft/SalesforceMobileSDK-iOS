@@ -71,21 +71,13 @@
     return nil;
 }
 
--(BOOL)shouldAutorotate
-{
-    UIViewController *topViewController = [SFSDKRootController topViewController:self];
-    if (topViewController!=nil && topViewController!=self)
-        return [topViewController shouldAutorotate];
-    return NO;
-}
-
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
     UIViewController *topViewController = [SFSDKRootController topViewController:self];
     if (topViewController!=nil && topViewController!=self)
         return [topViewController supportedInterfaceOrientations];
     
-    return UIInterfaceOrientationMaskPortrait;
+    return UIInterfaceOrientationMaskAll;
 }
 
 #pragma mark - Helper class methods

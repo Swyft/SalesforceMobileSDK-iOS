@@ -86,9 +86,13 @@ NSString * const kSyncTargetLastError = @"__last_error__";
 
 - (void) deleteRecordsFromLocalStore:(SFMobileSyncSyncManager*)syncManager soupName:(NSString*)soupName ids:(NSArray*)ids idField:(NSString*)idField {
     if (ids.count > 0) {
+        NSMutableArray *escapedIds = [NSMutableArray arrayWithCapacity:ids.count];
+        for (NSString *anId in ids) {
+            [escapedIds addObject:[anId stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+        }
         NSString *smartSql = [NSString stringWithFormat:@"SELECT {%@:%@} FROM {%@} WHERE {%@:%@} IN ('%@')",
                                                         soupName, SOUP_ENTRY_ID, soupName, soupName, idField,
-                                                        [ids componentsJoinedByString:@"','"]];
+                                                        [escapedIds componentsJoinedByString:@"','"]];
 
         SFQuerySpec *querySpec = [SFQuerySpec newSmartQuerySpec:smartSql withPageSize:ids.count];
         [syncManager.store removeEntriesByQuery:querySpec fromSoup:soupName];
@@ -120,6 +124,10 @@ NSString * const kSyncTargetLastError = @"__last_error__";
 
 - (NSDictionary*) getFromLocalStore:(SFMobileSyncSyncManager *)syncManager soupName:(NSString*)soupName storeId:(NSNumber*)storeId {
     return [syncManager.store retrieveEntries:@[storeId] fromSoup:soupName][0];
+}
+
+- (NSArray<NSDictionary*>*) getFromLocalStore:(SFMobileSyncSyncManager *)syncManager soupName:(NSString*)soupName storeIds:(NSArray<NSNumber*>*)storeIds {
+    return [syncManager.store retrieveEntries:storeIds fromSoup:soupName];
 }
 
 - (void) deleteFromLocalStore:(SFMobileSyncSyncManager *)syncManager soupName:(NSString*)soupName record:(NSDictionary*)record {
@@ -204,6 +212,14 @@ NSString * const kSyncTargetLastError = @"__last_error__";
         [flatArray addObjectsFromArray:row];
     }
     return flatArray;
+}
+
++ (NSString*) createLocalId {
+    return [NSString stringWithFormat:@"local_%09d", arc4random_uniform(1000000000)];
+}
+
++ (BOOL) isLocalId:(NSString*)recordId {
+    return [recordId hasPrefix:@"local_"];
 }
 
 @end

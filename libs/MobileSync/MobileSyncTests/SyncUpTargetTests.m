@@ -109,6 +109,22 @@
 }
 
 /**
+ * Sync up records missing sobject type
+ */
+- (void) testSyncUpWithNoType {
+    [self trySyncUpBadTypeOrNoType:YES];
+}
+
+
+/**
+  * Sync up records using bad sobject type
+ */
+- (void) testSyncUpWithBadType {
+    [self trySyncUpBadTypeOrNoType:NO];
+}
+
+
+/**
  * Sync down the test accounts, modify none, sync up, check smartstore and server afterwards
  */
 -(void)testSyncUpWithNoLocalUpdates
@@ -635,27 +651,96 @@
     [idToFields addEntriesFromDictionary:expectedServerIdToFields];
 }
 
+-(void) testSyncUpManyLocallyCreatedRecords {
+    [self trySyncUpWithLocallyCreatedRecords:SFSyncStateMergeModeOverwrite countRecords:500];
+}
+
 
 #pragma mark - helper methods
 
--(void) trySyncUpWithLocallyCreatedRecords:(SFSyncStateMergeMode)syncUpMergeMode
+-(void) trySyncUpBadTypeOrNoType:(BOOL) noType
+{
+    // Setup soup
+    [self createAccountsSoup];
+    idToFields = [NSMutableDictionary new];
+    
+    // Create a few entries locally
+    NSArray* namesGoodRecords = @[ [self createAccountName], [self createAccountName], [self createAccountName]];
+    NSArray* namesBadRecords = @[ [self createAccountName], [self createAccountName] ];
+    
+    [self createAccountsLocally:namesGoodRecords];
+    [self createAccountsLocally:namesBadRecords mutateBlock:^NSMutableDictionary *(NSMutableDictionary *record) {
+        if (noType) {
+            [record removeObjectForKey:ATTRIBUTES];
+        } else {
+            NSMutableDictionary* attributes = [NSMutableDictionary new];
+            attributes[TYPE] = @"badType";
+            record[ATTRIBUTES] = attributes;
+        }
+        return record;
+    }];
+    
+    // Sync up
+    [self trySyncUp:5 mergeMode:SFSyncStateMergeModeOverwrite];
+    
+    // Check db for records with good names
+    NSDictionary* idToFieldsGoodNames = [self getIdToFieldsByName:ACCOUNTS_SOUP fieldNames:@[NAME, DESCRIPTION] nameField:NAME names:namesGoodRecords];
+    [self checkDbStateFlags:[idToFieldsGoodNames allKeys] soupName:ACCOUNTS_SOUP expectedLocallyCreated:NO expectedLocallyUpdated:NO expectedLocallyDeleted:NO];
+    
+    // Check db for records with bad names
+    NSDictionary* idToFieldsBadNames = [self getIdToFieldsByName:ACCOUNTS_SOUP fieldNames:@[NAME, DESCRIPTION, kSyncTargetLastError] nameField:NAME names:namesBadRecords];
+    [self checkDbStateFlags:[idToFieldsBadNames allKeys] soupName:ACCOUNTS_SOUP expectedLocallyCreated:YES expectedLocallyUpdated:NO expectedLocallyDeleted:NO];
+    
+    XCTAssertEqual(idToFieldsBadNames.count, namesBadRecords.count);
+    for (NSDictionary * fields in [idToFieldsBadNames allValues]) {
+        NSString* name = fields[NAME];
+        NSString* lastError = fields[kSyncTargetLastError];
+        if ([namesBadRecords containsObject:name]) {
+            
+            BOOL hasExpectedError = [lastError containsString:@"The requested resource does not exist"] // older end point error
+            || [lastError containsString:@"sObject type 'badType' is not supported"] // sobject collection error with bad type
+            || [lastError containsString:@"sObject type 'null' is not supported"] // sobject collection error with no type
+            || [lastError containsString:@"Nested object for polymorphic foreign key must have an attributes field before any other fields"]; // sobject collection error with invalid type that appears after other fields
+
+            XCTAssertTrue(hasExpectedError, @"Wrong error: %@", lastError);
+        }
+        else {
+            XCTFail(@"Unexpected record found: %@", name);
+        }
+    }
+            
+    // Check server for records with good names
+    [self checkServer:idToFieldsGoodNames];
+    
+    // Adding to idToFields so that they get deleted in tearDown
+    [idToFields addEntriesFromDictionary:idToFieldsGoodNames];
+}
+
+-(void) trySyncUpWithLocallyCreatedRecords:(SFSyncStateMergeMode)syncUpMergeMode {
+    [self trySyncUpWithLocallyCreatedRecords:syncUpMergeMode countRecords:3];
+}
+
+-(void) trySyncUpWithLocallyCreatedRecords:(SFSyncStateMergeMode)syncUpMergeMode countRecords:(NSUInteger)countRecords
 {
     // Create test data
     [self createTestData];
     
     // Create a few entries locally
-    NSArray* names = @[ [self createAccountName], [self createAccountName], [self createAccountName]];
+    NSMutableArray* names = [NSMutableArray new];
+    for (int i=0; i<countRecords; i++) {
+        [names addObject:[self createAccountName]];
+    }
     [self createAccountsLocally:names];
     
     // Sync up
-    [self trySyncUp:3 mergeMode:syncUpMergeMode];
+    [self trySyncUp:countRecords mergeMode:syncUpMergeMode];
     
     // Check that db doesn't show entries as locally created anymore and that they use sfdc id
     NSDictionary* idToFieldsCreated = [self getIdToFieldsByName:ACCOUNTS_SOUP fieldNames:@[NAME, DESCRIPTION] nameField:NAME names:names];
     [self checkDbStateFlags:[idToFieldsCreated allKeys] soupName:ACCOUNTS_SOUP expectedLocallyCreated:NO expectedLocallyUpdated:NO expectedLocallyDeleted:NO];
     
     // Check server
-    [self checkServer:idToFieldsCreated byNames:names];
+    [self checkServer:idToFieldsCreated];
     
     // Adding to idToFields so that they get deleted in tearDown
     [idToFields addEntriesFromDictionary:idToFieldsCreated];

@@ -35,10 +35,10 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
 #import "NSData+SFSDKUtils.h"
 #import "SFSDKIDPConstants.h"
 #import "SFSDKAuthRequest.h"
-#import "SFSDKAuthRequestCommand.h"
+#import "SFSDKSPLoginRequestCommand.h"
 #import "SFApplicationHelper.h"
 #import "NSString+SFAdditions.h"
-#import "SFSDKAuthResponseCommand.h"
+#import "SFSDKSPLoginResponseCommand.h"
 #import "SFSDKWindowManager.h"
 #import "SFSDKAuthErrorCommand.h"
 #import "SFUserAccountManager.h"
@@ -46,11 +46,11 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
 
 + (void)invokeIDPApp:(SFSDKAuthSession *)session completion:(void (^)(BOOL))completionBlock {
     
-    session.oauthCoordinator.codeVerifier = [[SFSDKCryptoUtils randomByteDataWithLength:kSFVerifierByteLength] msdkBase64UrlString];
+    session.oauthCoordinator.codeVerifier = [[SFSDKCryptoUtils randomByteDataWithLength:kSFVerifierByteLength] sfsdk_base64UrlString];
      
-    NSString *codeChallengeString = [[[session.oauthCoordinator.codeVerifier dataUsingEncoding:NSUTF8StringEncoding] msdkSha256Data] msdkBase64UrlString];
+    NSString *codeChallengeString = [[[session.oauthCoordinator.codeVerifier dataUsingEncoding:NSUTF8StringEncoding] sfsdk_sha256Data] sfsdk_base64UrlString];
 
-    SFSDKAuthRequestCommand *command = [[SFSDKAuthRequestCommand alloc] init];
+    SFSDKSPLoginRequestCommand *command = [[SFSDKSPLoginRequestCommand alloc] init];
     command.scheme = session.oauthRequest.idpAppURIScheme;
     command.spClientId = session.oauthCoordinator.credentials.clientId;
     command.spCodeChallenge = codeChallengeString;
@@ -63,15 +63,16 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
     
     NSURL *url = [command requestURL];
     dispatch_async(dispatch_get_main_queue(), ^{
-        BOOL launched  = [SFApplicationHelper openURL:url];
-        completionBlock(launched);
+        [SFApplicationHelper openURL:url options:@{} completionHandler:^(BOOL success) {
+            completionBlock(success);
+        }];
     });
 }
 
 + (NSString *)encodeScopes:(NSSet <NSString *> *)requestScopes {
     NSMutableSet *scopes = (requestScopes.count > 0 ? [NSMutableSet setWithSet:requestScopes] : [NSMutableSet set]);
     [scopes addObject:kSFRefreshTokenParam];
-    NSString *scopeStr = [[[scopes allObjects] componentsJoinedByString:@","] stringByURLEncoding];
+    NSString *scopeStr = [[[scopes allObjects] componentsJoinedByString:@","] sfsdk_stringByURLEncoding];
     return [NSString stringWithFormat:@"%@", scopeStr];
 }
 
@@ -88,27 +89,17 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
     return scopes;
 }
 
-+ (void)invokeSPApp:(SFSDKAuthSession *)session completion:(void (^)(BOOL))completionBlock {
-    
-    SFSDKAuthResponseCommand *responseCommand = [[SFSDKAuthResponseCommand alloc] init];
-   
-    NSString *spAppRedirectUrl = session.oauthCoordinator.spAppCredentials.redirectUri;
-    NSURL *spAppURL = [NSURL URLWithString:spAppRedirectUrl];
-    responseCommand.scheme = spAppURL.scheme;
-    responseCommand.authCode = session.oauthCoordinator.spAppCredentials.authCode;
-    
-    NSURL *url = [responseCommand requestURL];
-   
++ (void)invokeSPApp:(NSURL *)url completion:(void (^)(BOOL))completionBlock {
     dispatch_async(dispatch_get_main_queue(), ^{
-        SFSDKWindowContainer *authWindow = [SFSDKWindowManager sharedManager].authWindow;
+        SFSDKWindowContainer *authWindow = [[SFSDKWindowManager sharedManager] authWindow:nil];
         [authWindow.viewController.presentedViewController dismissViewControllerAnimated:YES  completion:^{
-           [authWindow dismissWindow];
-           [[SFSDKWindowManager sharedManager].mainWindow presentWindow];
+            [authWindow dismissWindow];
+            [[[SFSDKWindowManager sharedManager] mainWindow:nil] presentWindow];
         }];
-        BOOL launched  = [SFApplicationHelper openURL:url];
-        completionBlock(launched);
+        [SFApplicationHelper openURL:url options:@{} completionHandler:^(BOOL success) {
+            completionBlock(success);
+        }];
     });
-    
 }
 
 + (void)invokeSPAppWithError:(SFOAuthCredentials *)spAppCredentials error:(NSError *)error reason:(NSString *)reason {
@@ -117,21 +108,23 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
     NSURL *spAppUrl = [NSURL URLWithString:spAppUrlStr];
     NSURL *url = [self appURLWithError:error reason:reason app:spAppUrl.scheme];
     dispatch_async(dispatch_get_main_queue(), ^{
-        SFSDKWindowContainer *authWindow = [SFSDKWindowManager sharedManager].authWindow;
+        SFSDKWindowContainer *authWindow = [[SFSDKWindowManager sharedManager] authWindow:nil];
         [authWindow.viewController.presentedViewController dismissViewControllerAnimated:YES  completion:^{
             [authWindow dismissWindow];
-            [[SFSDKWindowManager sharedManager].mainWindow presentWindow];
+            [[[SFSDKWindowManager sharedManager] mainWindow:nil] presentWindow];
         }];
-        BOOL launched  = [SFApplicationHelper openURL:url];
-        if (!launched) {
-            [SFSDKCoreLogger e:[self class] format:@"Could not launch spAPP to handle error %@",[error description]];
-        }
-        [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:^(BOOL result) {
-            [SFSDKCoreLogger d:[self class] format:@"Completed idp authentication with error, %@",error];
+        
+        [SFApplicationHelper openURL:url options:@{} completionHandler:^(BOOL success) {
+            if (!success) {
+                [SFSDKCoreLogger e:[self class] format:@"Could not launch spAPP to handle error %@", [error description]];
+            }
+            
+            [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:^(BOOL result) {
+                [SFSDKCoreLogger d:[self class] format:@"Completed idp authentication with error, %@", error];
+            }];
         }];
     });
 }
-
 
 + (NSURL *)appURLWithError:(NSError *)error reason:(NSString *)reason app:(NSString *)appScheme {
 

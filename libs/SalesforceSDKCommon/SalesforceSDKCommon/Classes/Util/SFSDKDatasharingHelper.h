@@ -37,19 +37,9 @@ NS_SWIFT_NAME(DataSharingHelper)
 @property (nonatomic) BOOL appGroupEnabled NS_SWIFT_NAME(isAppGroupEnabled);
 
 /*!
- * @brief Set to YES to enable keychain sharing.
- */
-@property (nonatomic) BOOL keychainSharingEnabled NS_SWIFT_NAME(isKeychainSharingEnabled);
-
-/*!
  * @brief Name of the app group to use to share data.
  */
 @property (nonatomic, strong, nullable) NSString *appGroupName;
-
-/*!
- * @brief Name of the keychain group to use
- */
-@property (nonatomic, strong, nullable) NSString *keychainGroupName;
 
 /** Shared singleton
  */

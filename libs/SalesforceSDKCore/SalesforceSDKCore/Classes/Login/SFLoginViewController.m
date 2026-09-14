@@ -33,15 +33,23 @@
 #import "SFSDKLoginHostDelegate.h"
 #import "UIColor+SFColors.h"
 #import "SFSDKResourceUtils.h"
-#import "SFUserAccountManager.h"
+#import "SFUserAccountManager+Internal.h"
 #import "SFSDKLoginViewControllerConfig.h"
 #import "SFOAuthInfo.h"
 #import "SFSDKWindowManager.h"
 #import "SFSDKNavigationController.h"
 #import "SFSDKViewUtils.h"
+#import "SalesforceSDKManager+Internal.h"
+#import <LocalAuthentication/LocalAuthentication.h>
+#import "SFRestAPI+Internal.h"
+#import "SFOAuthCoordinator+Internal.h"
+#import "SFSDKAuthSession.h"
+#import "SFSDKAuthRequest.h"
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 @interface SFLoginViewController () <SFSDKLoginHostDelegate, SFUserAccountManagerDelegate>
 
 @property (nonatomic, strong) UINavigationBar *navBar;
+@property (nonatomic, strong, nullable) UIButton *biometricButton;
 
 // Reference to previous user account
 @property (nonatomic, strong) SFUserAccount *previousUserAccount;
@@ -54,7 +62,7 @@
 - (instancetype)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
     self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil];
     if (self) {
-        _config = [[SFSDKLoginViewControllerConfig  alloc] init];
+        _config = [[SFSDKLoginViewControllerConfig alloc] init];
         [[SFUserAccountManager sharedInstance] addDelegate:self];
     }
     return self;
@@ -68,16 +76,47 @@
     self.view.autoresizesSubviews = YES;
     self.view.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth;
     self.view.clipsToBounds = YES;
-    if(self.showNavbar){
+    if (self.showNavbar){
         [self setupNavigationBar];
     } else {
-        self.navigationController.navigationBarHidden  =  YES;
+        self.navigationController.navigationBarHidden = YES;
     }
+    
+    [self.view addSubview:_oauthView];
+
+    SFBiometricAuthenticationManagerInternal *bioAuthManager = [SFBiometricAuthenticationManagerInternal shared];
+    BOOL showBioAuthButton = [bioAuthManager showNativeLoginButton];
+
+    if (showBioAuthButton) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        [button setTitle:[SFSDKResourceUtils localizedString:@"biometricLoginButton"] forState:UIControlStateNormal];
+        [button addTarget:self action:@selector(presentBioAuthAction:) forControlEvents:UIControlEventTouchUpInside];
+        self.biometricButton = button;
+        [self.view addSubview:self.biometricButton];
+    }
+    
+    [self registerForTraitChanges:@[UITraitDisplayScale.class] withAction:@selector(setupNavigationBar)];
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    [self layoutWebView];
+- (CGFloat) belowFrame:(CGRect) frame {
+    return frame.origin.y + frame.size.height;
+}
+
+- (void)viewWillLayoutSubviews {
+    CGFloat heightOffsetMultiplier = _biometricButton ? 0.9 : 1.0;
+    CGFloat bottomOffset = _biometricButton ? self.view.safeAreaInsets.bottom : 0;
+    
+    // Web view
+    CGFloat x = 0;
+    CGFloat y = [self belowFrame:self.navBar.frame];
+    CGFloat w = self.view.bounds.size.width;
+    CGFloat h = ((self.view.bounds.size.height - y) * heightOffsetMultiplier) - bottomOffset;
+    self.oauthView.frame = CGRectMake(x, y, w, h);
+    
+    // Biometric button
+    h = (self.view.bounds.size.height - y) * 0.1;
+    y = self.view.bounds.size.height - h - bottomOffset;
+    _biometricButton.frame = CGRectMake(x, y, w, h);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -144,6 +183,14 @@
     self.config.showSettingsIcon = showSettingsIcon;
 }
 
+- (BOOL)showServerPicker {
+    return self.config.showServerPicker;
+}
+
+- (void)setShowServerPicker:(BOOL)showServerPicker {
+    self.config.showServerPicker = showServerPicker;
+}
+
 - (SFSDKLoginViewControllerConfig *)config {
     return _config;
 }
@@ -157,32 +204,25 @@
 #pragma mark - Setup Navigation bar
 
 - (void)setupNavigationBar {
-    
-    self.navBar = self.navigationController.navigationBar;
-    self.navBar.topItem.titleView = [self createTitleItem];
-    // Hides the gear icon if there are no hosts to switch to.
-    SFManagedPreferences *managedPreferences = [SFManagedPreferences sharedPreferences];
-    if (managedPreferences.onlyShowAuthorizedHosts && managedPreferences.loginHosts.count == 0) {
-        self.config.showSettingsIcon = NO;
+    if (self.showNavbar) {
+        self.navBar = self.navigationController.navigationBar;
+        self.navBar.topItem.titleView = [self createTitleItem];
+        
+        if(self.showSettingsIcon) {
+            // Setup right bar button.
+            UIBarButtonItem *button = [self createSettingsButton];
+            self.navBar.topItem.rightBarButtonItem = button;
+        }
+        [self styleNavigationBar:self.navBar];
+        
+        if (self.navigationController == nil) {
+            [self.view addSubview:self.navBar];
+        }
+        
+        #if !TARGET_OS_VISION
+        [self setNeedsStatusBarAppearanceUpdate];
+        #endif
     }
-    if(self.showSettingsIcon) {
-        // Setup right bar button.
-       UIBarButtonItem *button = [self createSettingsButton];
-       if (!button.target){
-           [button setTarget:self];
-       }
-       if (!button.action){
-           [button setAction:@selector(showLoginHost:)];
-       }
-       self.navBar.topItem.rightBarButtonItem = button;
-    }
-    [self styleNavigationBar:self.navBar];
-    
-    if (self.navigationController == nil) {
-        [self.view addSubview:self.navBar];
-    }
-    
-    [self setNeedsStatusBarAppearanceUpdate];
 }
 
 - (void)setupBackButton {
@@ -202,7 +242,12 @@
 }
 
 - (BOOL)shouldShowBackButton {
-    if (self.config.shouldDisplayBackButton || [SFUserAccountManager sharedInstance].idpEnabled) {
+    if ([[SFBiometricAuthenticationManagerInternal shared] locked]) {
+        return NO;
+    }
+    
+    if (self.config.shouldDisplayBackButton || [SFUserAccountManager sharedInstance].sdk_idpEnabled
+        || [SFUserAccountManager sharedInstance].shouldFallbackToWebAuthentication) {
         return YES;
     }
     NSInteger totalAccounts = [SFUserAccountManager sharedInstance].allUserAccounts.count;
@@ -217,10 +262,126 @@
 
 - (UIBarButtonItem *)createSettingsButton {
     UIImage *image = [[SFSDKResourceUtils imageNamed:@"login-window-gear"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    UIBarButtonItem *settingsButton = [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain target:self action:@selector(showLoginHost:)];
-    settingsButton.accessibilityLabel = [SFSDKResourceUtils localizedString:@"LOGIN_CHOOSE_SERVER"];
-    settingsButton.accessibilityIdentifier = @"choose connection button";
+    
+    NSMutableArray  *menuActions = [[NSMutableArray alloc] initWithCapacity:3];
+
+    // Don't show the change server option if there are no hosts to switch to.
+    SFManagedPreferences *managedPreferences = [SFManagedPreferences sharedPreferences];
+    if (managedPreferences.onlyShowAuthorizedHosts && managedPreferences.loginHosts.count == 0) {
+        self.showServerPicker = NO;
+    }
+    
+    if (self.showServerPicker) {
+        [menuActions addObject:[UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_CHOOSE_SERVER"]
+                                                   image:nil
+                                              identifier:nil
+                                                 handler:^(__kindof UIAction* _Nonnull action) {
+            [self showLoginHost:self];
+        }]];
+    }
+
+
+    [menuActions addObject:[UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_CLEAR_COOKIES"]
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction* _Nonnull action) {
+        if ([self.delegate respondsToSelector:@selector(loginViewControllerDidClearCookies:)]) {
+            [self.delegate loginViewControllerDidClearCookies:self];
+        }
+    }]];
+
+    [menuActions addObject:[UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_CLEAR_CACHE"]
+                                                 image:nil
+                                            identifier:nil
+                                               handler:^(__kindof UIAction* _Nonnull action) {
+        if ([self.delegate respondsToSelector:@selector(loginViewControllerDidClearCache:)]) {
+            [self.delegate loginViewControllerDidClearCache:self];
+        }
+    }]];
+
+    [menuActions addObject:[UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_RELOAD"]
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction* _Nonnull action) {
+        if ([self.delegate respondsToSelector:@selector(loginViewControllerDidReload:)]) {
+            [self.delegate loginViewControllerDidReload:self];
+        }
+    }]];
+    
+    
+    if ([[SalesforceSDKManager sharedManager] isDevSupportEnabled]) {
+        [menuActions addObject:[UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_OPTIONS"]
+                                                   image:nil
+                                              identifier:nil
+                                                 handler:^(__kindof UIAction* _Nonnull action) {
+            UIViewController *configPicker = [LoginOptionsViewController makeViewControllerOnConfigurationCompleted:^{
+                [self dismissViewControllerAnimated:YES completion:^{
+                    if ([self.delegate respondsToSelector:@selector(loginViewControllerDidChangeLoginOptions:)]) {
+                        [self.delegate loginViewControllerDidChangeLoginOptions:self];
+                    }
+                }];
+            }];
+            [self presentViewController:configPicker animated:YES completion:nil];
+        }]];
+    }
+
+    // Login for Admin - forces browser-based (advanced) authentication to support phishing-resistant MFA.
+    // Wrapped in an uncached UIDeferredMenuElement so the show/hide predicate is re-evaluated each
+    // time the menu opens. The entry is hidden during phase 1 of Welcome Discovery (i.e. before the
+    // user has selected an account on welcome.salesforce.com/discovery), where we have no resolved
+    // My Domain to launch the browser session against.
+    __weak typeof(self) weakSelf = self;
+    UIDeferredMenuElement *loginForAdminElement = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^ _Nonnull completion)(NSArray<UIMenuElement *> * _Nonnull)) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (![SFLoginViewController shouldShowLoginForAdminForSession:[strongSelf currentAuthSessionForMenu]]) {
+            completion(@[]);
+            return;
+        }
+        UIAction *action = [UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_FOR_ADMIN"]
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__kindof UIAction* _Nonnull action) {
+            __strong typeof(weakSelf) handlerSelf = weakSelf;
+            if ([handlerSelf.delegate respondsToSelector:@selector(loginViewControllerDidSelectLoginForAdmin:)]) {
+                [handlerSelf.delegate loginViewControllerDidSelectLoginForAdmin:handlerSelf];
+            }
+        }];
+        completion(@[action]);
+    }];
+    [menuActions addObject:loginForAdminElement];
+
+    UIMenu *menu = [UIMenu menuWithTitle:@"" // No title
+                                children:menuActions];
+    UIBarButtonItem *settingsButton = [[UIBarButtonItem alloc] initWithImage:image menu:menu];
+    settingsButton.accessibilityLabel = [SFSDKResourceUtils localizedString:@"LOGIN_SETTINGS_BUTTON"];
+    settingsButton.accessibilityIdentifier = @"settings";
     return settingsButton;
+}
+
+- (nullable SFSDKAuthSession *)currentAuthSessionForMenu {
+    NSString *sceneId = self.view.window.windowScene.session.persistentIdentifier;
+    if (sceneId.length == 0) {
+        return nil;
+    }
+    return [[SFUserAccountManager sharedInstance].authSessions objectForKey:sceneId];
+}
+
++ (BOOL)shouldShowLoginForAdminForSession:(nullable SFSDKAuthSession *)session {
+    // Default to showing the entry when we have no session/coordinator info.
+    // This matches the previous (always-shown) behavior on non-discovery flows
+    // and during early SDK lifecycle before the auth session is wired up.
+    SFOAuthCoordinator *coordinator = session.oauthCoordinator;
+    if (session == nil || coordinator == nil) {
+        return YES;
+    }
+
+    NSString *loginHost = session.oauthRequest.loginHost;
+    BOOL isDiscoveryHost = [SFDomainDiscoveryCoordinator isDiscoveryDomain:loginHost];
+    // Hide only when we are mid-discovery (no My Domain selected yet).
+    if (isDiscoveryHost && !coordinator.domainUpdated) {
+        return NO;
+    }
+    return YES;
 }
 
 - (UIView *)createTitleItem {
@@ -232,36 +393,32 @@
     }
     if (self.config.navBarFont) {
         item.font = self.config.navBarFont;
+    } else {
+        item.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     }
+    
     item.text = title;
-    [item sizeToFit];
+    item.textAlignment = NSTextAlignmentCenter;
+    item.adjustsFontForContentSizeCategory = YES;
     return item;
 }
 
 - (SFSDKLoginHostListViewController *)createLoginHostListViewController {
     SFSDKLoginHostListViewController *loginHostListViewController = [[SFSDKLoginHostListViewController alloc] initWithStyle:UITableViewStylePlain];
+    loginHostListViewController.config = self.config;
+    loginHostListViewController.delegate = self;
     return loginHostListViewController;
 }
 
-- (BOOL)shouldAutorotate {
-    return NO;
-}
-
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
-    return UIInterfaceOrientationMaskPortrait;
-}
-
-- (void)layoutWebView {
-    if (nil != _oauthView) {
-        [_oauthView removeFromSuperview];
-        [self.view addSubview:_oauthView];
-        NSDictionary *views = NSDictionaryOfVariableBindings(_oauthView);
-        [self.view addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[_oauthView]|" options:0 metrics:nil views:views]];
-        [self.view addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[_oauthView]|" options:0 metrics:nil views:views]];
-    }
+    return UIInterfaceOrientationMaskAll;
 }
 
 #pragma mark - Action Methods
+
+- (IBAction)presentBioAuthAction:(id)sender {
+    [[SFBiometricAuthenticationManagerInternal shared] presentBiometricWithScene:self.view.window.windowScene];
+}
 
 - (IBAction)showLoginHost:(id)sender {
     [self showHostListView];
@@ -272,13 +429,20 @@
 }
 
 - (void)handleBackButtonAction {
+    UIScene *scene = self.view.window.windowScene;
     [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:nil];
-    if (![SFUserAccountManager sharedInstance].idpEnabled) {
-        [[SFSDKWindowManager sharedManager].authWindow.viewController.presentedViewController dismissViewControllerAnimated:NO completion:^{
-            [[SFSDKWindowManager sharedManager].authWindow dismissWindow];
+    
+    if ([SFUserAccountManager sharedInstance].shouldFallbackToWebAuthentication) {
+        [SFUserAccountManager sharedInstance].shouldFallbackToWebAuthentication = NO;
+        [[SFUserAccountManager sharedInstance] loginWithCompletion:nil failure:nil];
+    }
+    
+    if (![SFUserAccountManager sharedInstance].sdk_idpEnabled) {
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController.presentedViewController dismissViewControllerAnimated:NO completion:^{
+            [[[SFSDKWindowManager sharedManager] authWindow:scene] dismissWindow];
         }];
     } else {
-        [[SFSDKWindowManager sharedManager].authWindow.viewController dismissViewControllerAnimated:NO completion:nil];
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController dismissViewControllerAnimated:NO completion:nil];
     }
 }
 
@@ -287,12 +451,11 @@
 - (SFSDKLoginHostListViewController *)loginHostListViewController {
     if (!_loginHostListViewController) {
         _loginHostListViewController = [self createLoginHostListViewController];
-        _loginHostListViewController.delegate = self;
     }
     return _loginHostListViewController;
 }
 
-#pragma mark - Properties`
+#pragma mark - Properties
 
 - (void)setOauthView:(UIView *)oauthView {
     if (![oauthView isEqual:_oauthView]) {
@@ -307,7 +470,7 @@
     if (!navigationBar) {
         return;
     }
-    [SFSDKViewUtils styleNavigationBar:navigationBar config:self.config];
+    [SFSDKViewUtils styleNavigationBar:navigationBar config:self.config classes:@[[self.navigationController class]]];
 }
 
 #pragma mark - SFSDKLoginHostDelegate Methods
@@ -338,9 +501,12 @@
 #pragma mark - Login Host
 
 - (void)showHostListView {
-    SFSDKNavigationController *navController = [[SFSDKNavigationController alloc] initWithRootViewController:self.loginHostListViewController];
+    // Create a FRESH instance each time instead of reusing the cached one
+    SFSDKLoginHostListViewController *hostListVC = [self createLoginHostListViewController];
+
+    SFSDKNavigationController *navController = [[SFSDKNavigationController alloc] initWithRootViewController:hostListVC];
     navController.modalPresentationStyle = UIModalPresentationPageSheet;
-    
+
     [self presentViewController:navController animated:YES completion:nil];
 }
 
@@ -356,8 +522,4 @@
         self.previousUserAccount = fromUser;
 }
 
-
-
-
 @end
-

@@ -25,14 +25,11 @@
 #import "SFOAuthKeychainCredentials.h"
 #import "SFOAuthCredentials+Internal.h"
 #import "SFSDKCryptoUtils.h"
-#import "SFKeyStoreManager.h"
-#import "SFKeychainItemWrapper.h"
-#import "SFCrypto.h"
 #import "UIDevice+SFHardware.h"
 #import "NSString+SFAdditions.h"
-#import  <SalesforceSDKCommon/NSUserDefaults+SFAdditions.h>
-
-NSString * const kSFOAuthEncryptionTypeKey = @"com.salesforce.oauth.creds.encryption.type";
+#import <SalesforceSDKCommon/NSUserDefaults+SFAdditions.h>
+#import <SalesforceSDKCommon/SalesforceSDKCommon-Swift.h>
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 
 @implementation SFOAuthKeychainCredentials
 
@@ -47,30 +44,90 @@ NSString * const kSFOAuthEncryptionTypeKey = @"com.salesforce.oauth.creds.encryp
     return [super initWithIdentifier:theIdentifier clientId:theClientId encrypted:encrypted];
 }
 
++ (BOOL)supportsSecureCoding {
+    return YES;
+}
+
 #pragma mark - Public Methods
 
 - (NSString *)accessToken {
-    return [self accessTokenWithSFEncryptionKey:[self keyStoreKeyForService:kSFOAuthServiceAccess]];
+    return [self decryptedTokenForService:kSFOAuthServiceAccess];
 }
 
 - (void)setAccessToken:(NSString *)token {
-    [self setAccessToken:token withSFEncryptionKey:[self keyStoreKeyForService:kSFOAuthServiceAccess]];
-    
-    NSUserDefaults *standardUserDefaults = [NSUserDefaults msdkUserDefaults];
-    [standardUserDefaults setInteger:kSFOAuthCredsEncryptionTypeKeyStore forKey:kSFOAuthEncryptionTypeKey];
-    [standardUserDefaults synchronize];
+    [self encryptToken:token forService:kSFOAuthServiceAccess];
 }
 
 - (NSString *)refreshToken {
-    return [self refreshTokenWithSFEncryptionKey:[self keyStoreKeyForService:kSFOAuthServiceRefresh]];
+    return [self decryptedTokenForService:kSFOAuthServiceRefresh];
 }
 
 - (void)setRefreshToken:(NSString *)token {
-    [self setRefreshToken:token withSFEncryptionKey:[self keyStoreKeyForService:kSFOAuthServiceRefresh]];
-    
-    NSUserDefaults *standardUserDefaults = [NSUserDefaults msdkUserDefaults];
-    [standardUserDefaults setInteger:kSFOAuthCredsEncryptionTypeKeyStore forKey:kSFOAuthEncryptionTypeKey];
-    [standardUserDefaults synchronize];
+    [self encryptToken:token forService:kSFOAuthServiceRefresh];
+}
+
+- (NSString *)lightningSid {
+    return [self decryptedTokenForService:kSFOAuthServiceLightningSid];
+}
+
+- (void)setLightningSid:(NSString *)sid {
+    [self encryptToken:sid forService:kSFOAuthServiceLightningSid];
+}
+
+- (NSString *)vfSid {
+    return [self decryptedTokenForService:kSFOAuthServiceVfSid];
+}
+
+- (void)setVfSid:(NSString *)sid {
+    [self encryptToken:sid forService:kSFOAuthServiceVfSid];
+}
+
+- (NSString *)contentSid {
+    return [self decryptedTokenForService:kSFOAuthServiceContentSid];
+}
+
+- (void)setContentSid:(NSString *)sid {
+    [self encryptToken:sid forService:kSFOAuthServiceContentSid];
+}
+
+- (NSString *)csrfToken {
+    return [self decryptedTokenForService:kSFOAuthServiceCsrf];
+}
+
+- (void)setCsrfToken:(NSString *)token {
+    [self encryptToken:token forService:kSFOAuthServiceCsrf];
+}
+
+- (NSString *)parentSid {
+    return [self decryptedTokenForService:kSFOAuthServiceParentSid];
+}
+
+- (void)setParentSid:(NSString *)sid {
+    [self encryptToken:sid forService:kSFOAuthServiceParentSid];
+}
+
+- (NSString *)uiSid {
+    return [self decryptedTokenForService:kSFOAuthServiceUiSid];
+}
+
+- (void)setUiSid:(NSString *)sid {
+    [self encryptToken:sid forService:kSFOAuthServiceUiSid];
+}
+
+- (NSString *)beaconChildConsumerKey {
+    return [self decryptedTokenForService:kSFOAuthServiceBeaconChildConsumerKey];
+}
+
+- (void)setBeaconChildConsumerKey:(NSString *)key {
+    [self encryptToken:key forService:kSFOAuthServiceBeaconChildConsumerKey];
+}
+
+- (NSString *)beaconChildConsumerSecret {
+    return [self decryptedTokenForService:kSFOAuthServiceBeaconChildConsumerSecret];
+}
+
+- (void)setBeaconChildConsumerSecret:(NSString *)secret {
+    [self encryptToken:secret forService:kSFOAuthServiceBeaconChildConsumerSecret];
 }
 
 #pragma mark - Private Keychain Methods
@@ -79,71 +136,41 @@ NSString * const kSFOAuthEncryptionTypeKey = @"com.salesforce.oauth.creds.encryp
     if (!([self.identifier length] > 0)) {
         @throw SFOAuthInvalidIdentifierException();
     }
-    
-    SFKeychainItemWrapper *keychainItem = [SFKeychainItemWrapper itemWithIdentifier:service account:self.identifier];
-    NSData *tokenData = [keychainItem valueData];
+    SFSDKKeychainResult *result = [SFSDKKeychainHelper createIfNotPresentWithService:service account:self.identifier];
+    NSData *tokenData = result.data;
+    if (result.error) {
+        [SFSDKCoreLogger e:[self class] format:@"Could not read %@ from keychain, %@", service, result.error];
+    }
     return tokenData;
 }
 
-- (NSString *)accessTokenWithSFEncryptionKey:(SFEncryptionKey *)encryptionKey {
-    NSData *accessTokenData = [self tokenForService:kSFOAuthServiceAccess];
-    if (!accessTokenData) {
+- (NSString *)decryptedTokenForService:(NSString *)service {
+    NSData* encryptionKey = [self encryptionKeyForService:service];
+    NSData *data = [self tokenForService:service];
+    if (!data) {
         return nil;
     }
     
     if (self.isEncrypted) {
-        NSData *decryptedData = [encryptionKey decryptData:accessTokenData];
+        NSData *decryptedData = [SFSDKEncryptor decryptData:data key:encryptionKey error:nil];
         return [[NSString alloc] initWithData:decryptedData encoding:NSUTF8StringEncoding];
     } else {
-        return [[NSString alloc] initWithData:accessTokenData encoding:NSUTF8StringEncoding];
+        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     }
 }
 
-- (void)setAccessToken:(NSString *)token withSFEncryptionKey:(SFEncryptionKey *)encryptionKey {
+- (void)encryptToken:(NSString *)token forService:(NSString *)service {
+    NSData* encryptionKey = [self encryptionKeyForService:service];
     NSData *tokenData = ([token length] > 0 ? [token dataUsingEncoding:NSUTF8StringEncoding] : nil);
     if (tokenData != nil) {
         if (self.isEncrypted) {
-            tokenData = [encryptionKey encryptData:tokenData];
+            tokenData = [SFSDKEncryptor encryptData:tokenData key:encryptionKey error:nil];
         }
     }
     
-    BOOL updateSucceeded = [self updateKeychainWithTokenData:tokenData forService:kSFOAuthServiceAccess];
+    BOOL updateSucceeded = [self updateKeychainWithTokenData:tokenData forService:service];
     if (!updateSucceeded) {
-        [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Failed to update access token.", [self class], NSStringFromSelector(_cmd)];
-    }
-}
-
-- (NSString *)refreshTokenWithSFEncryptionKey:(SFEncryptionKey *)encryptionKey {
-    NSData *refreshTokenData = [self tokenForService:kSFOAuthServiceRefresh];
-    if (!refreshTokenData) {
-        return nil;
-    }
-    
-    if (self.isEncrypted) {
-        NSData *decryptedData = [encryptionKey decryptData:refreshTokenData];
-        return [[NSString alloc] initWithData:decryptedData encoding:NSUTF8StringEncoding];
-    } else {
-        return [[NSString alloc] initWithData:refreshTokenData encoding:NSUTF8StringEncoding];
-    }
-}
-
-- (void)setRefreshToken:(NSString *)token withSFEncryptionKey:(SFEncryptionKey *)encryptionKey {
-    NSData *tokenData = ([token length] > 0 ? [token dataUsingEncoding:NSUTF8StringEncoding] : nil);
-    if (tokenData != nil) {
-        if (self.isEncrypted) {
-            tokenData = [encryptionKey encryptData:tokenData];
-        }
-    } else {
-        self.instanceUrl = nil;
-        self.communityId  = nil;
-        self.communityUrl = nil;
-        self.issuedAt    = nil;
-        self.identityUrl = nil;
-    }
-    
-    BOOL updateSucceeded = [self updateKeychainWithTokenData:tokenData forService:kSFOAuthServiceRefresh];
-    if (!updateSucceeded) {
-        [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Failed to update refresh token.", [self class], NSStringFromSelector(_cmd)];
+        [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Failed to update %@.", [self class], NSStringFromSelector(_cmd), service];
     }
 }
 
@@ -152,64 +179,25 @@ NSString * const kSFOAuthEncryptionTypeKey = @"com.salesforce.oauth.creds.encryp
     if (!([self.identifier length] > 0)) {
         @throw SFOAuthInvalidIdentifierException();
     }
-    
-    
-    SFKeychainItemWrapper *keychainItem = [SFKeychainItemWrapper itemWithIdentifier:service account:self.identifier];
-    BOOL keychainOperationSuccessful;
+    SFSDKKeychainResult *result = [SFSDKKeychainHelper createIfNotPresentWithService:service account:self.identifier];
     if (tokenData != nil) {
-        OSStatus result = [keychainItem setValueData:tokenData];
-        keychainOperationSuccessful = (result == errSecSuccess || result == errSecItemNotFound);
-        if (!keychainOperationSuccessful) { // errSecItemNotFound is an expected condition
-            [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Error saving token data to keychain: %@", [self class], NSStringFromSelector(_cmd), [SFKeychainItemWrapper keychainErrorCodeString:result]];
+        result = [SFSDKKeychainHelper writeWithService:service data:tokenData account:self.identifier];
+        if (!result.success) {
+            [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Error saving token data to keychain: %@", [self class], NSStringFromSelector(_cmd), result.error];
         }
     } else {
-        keychainOperationSuccessful = [keychainItem resetKeychainItem];
-        if (!keychainOperationSuccessful) {
-            [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Error resetting keychain data.", [self class], NSStringFromSelector(_cmd)];
+        result = [SFSDKKeychainHelper resetWithService:service account:self.identifier];
+        if (!result.success) {
+            [SFSDKCoreLogger w:[self class] format:@"%@:%@ - Error resetting tokenData in keychain: %@", [self class], NSStringFromSelector(_cmd), result.error];
         }
     }
     
-    return keychainOperationSuccessful;
+    return result.success;
 }
 
-- (NSData *)keyMacForService:(NSString *)service
-{
-#if (TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR)
-    NSString *macAddress = [[UIDevice currentDevice] macaddress];
-    return [self keyWithSeed:macAddress service:service];
-#else
-#warning OS X equivalent not yet implemented
-    return nil;
-#endif
-}
-
-- (NSData *)keyVendorIdForService:(NSString *)service
-{
-#if (TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR)
-    NSString *idForVendor = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
-    return [self keyWithSeed:idForVendor service:service];
-#else
-#warning OS X equivalent not yet implemented
-    return nil;
-#endif
-}
-
-- (NSData *)keyBaseAppIdForService:(NSString *)service
-{
-    NSString *baseAppId = [SFCrypto baseAppIdentifier];
-    return [self keyWithSeed:baseAppId service:service];
-}
-
-- (SFEncryptionKey *)keyStoreKeyForService:(NSString *)service
-{
-    SFEncryptionKey *keyForService = [[SFKeyStoreManager sharedInstance] retrieveKeyWithLabel:service autoCreate:YES];
+- (NSData *)encryptionKeyForService:(NSString *)service {
+    NSData *keyForService = [SFSDKKeyGenerator encryptionKeyFor:service error:nil];
     return keyForService;
-}
-
-- (NSData *)keyWithSeed:(NSString *)seed service:(NSString *)service
-{
-    NSString *strSecret = [seed stringByAppendingString:service];
-    return [strSecret sha256];
 }
 
 @end

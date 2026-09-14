@@ -50,6 +50,9 @@
         case SFOAuthTypeUserAgent:
             desc = @"SFOAuthTypeUserAgent";
             break;
+        case SFOAuthTypeWebServer:
+            desc = @"SFOAuthTypeWebServer";
+            break;
         case SFOAuthTypeRefresh:
             desc = @"SFOAuthTypeRefresh";
             break;
@@ -58,6 +61,15 @@
             break;
         case SFOAuthTypeJwtTokenExchange:
             desc = @"SFOAuthTypeJwtTokenExchange";
+            break;
+        case SFOAuthTypeIDP:
+            desc = @"SFOAuthTypeIDP";
+            break;
+        case SFOAuthTypeNative:
+            desc = @"SFOAuthTypeNative";
+            break;
+        case SFOAuthTypeRefreshTokenMigration:
+            desc = @"SFOAuthTypeRefreshTokenMigration";
             break;
         case SFOAuthTypeUnknown:
         default:

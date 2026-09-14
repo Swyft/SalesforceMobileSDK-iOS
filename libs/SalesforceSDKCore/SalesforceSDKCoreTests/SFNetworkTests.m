@@ -25,6 +25,9 @@
 
 #import <XCTest/XCTest.h>
 #import "SalesforceSDKCore/SFNetwork.h"
+#import "SalesforceSDKCore/SFRestAPI+Blocks.h"
+#import "SalesforceSDKCore/SalesforceSDKCore-Swift.h"
+#import "SalesforceSDKCore/SalesforceSDKManager.h"
 
 @interface SFNetwork (Testing)
 
@@ -111,6 +114,59 @@
         XCTAssertEqual(identifiers.count, 0);
         XCTAssertFalse([identifiers containsObject:identifier]);
     }
+}
+
+- (void)testMetricsAction {
+    [self addTeardownBlock:^{
+        SFNetwork.metricsCollectedAction = nil;
+    }];
+    
+    XCTestExpectation *getExpectation = [self expectationWithDescription:@"Get"];
+    NSString *testBaseURL = @"https://mobilesdk.my.salesforce.com";
+    NSString *testPathURL = @"/.well-known/auth-configuration";
+    SFRestRequest *request = [SFRestRequest customUrlRequestWithMethod:SFRestMethodGET baseURL:testBaseURL path:testPathURL queryParams:nil];
+    
+    [[SFRestAPI sharedGlobalInstance] sendRequest:request failureBlock:^(id  _Nullable response, NSError * _Nullable e, NSURLResponse * _Nullable rawResponse) {
+        XCTFail(@"Request failed");
+    } successBlock:^(id  _Nullable response, NSURLResponse * _Nullable rawResponse) {
+        [getExpectation fulfill];
+    }];
+    
+    XCTestExpectation *metricsExpectation = [self expectationWithDescription:@"metricsExpectation"];
+    SFNetwork.metricsCollectedAction = ^(NSURLSession * _Nonnull session, NSURLSessionTask * _Nonnull task, NSURLSessionTaskMetrics * _Nonnull metrics) {
+        XCTAssertNotNil(session);
+        XCTAssertNotNil(task);
+        XCTAssertNotNil(metrics);
+        [metricsExpectation fulfill];
+    };
+    
+    [self waitForExpectations:@[getExpectation, metricsExpectation] timeout:30];
+}
+
+- (void)testRequestUserAgent {
+    SFNetwork *network = [SFNetwork sharedEphemeralInstance];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://www.salesforce.com"]];
+    [network sendRequest:request dataResponseBlock:nil];
+    
+    NSString *userAgent = request.allHTTPHeaderFields[@"User-Agent"];
+    NSString *expectedUserAgent = [SalesforceSDKManager sharedManager].userAgentString(@"");
+    XCTAssertEqualObjects(userAgent, expectedUserAgent, @"User-Agent header should match SDK manager's user agent");
+}
+
+- (void)testImmutableRequestUserAgent {
+    SFNetwork *network = [SFNetwork sharedEphemeralInstance];
+    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:@"https://www.salesforce.com"]];
+    XCTestExpectation *completionExpectation = [self expectationWithDescription:@"immutable request completion"];
+    NSURLSessionDataTask *task = [network sendRequest:request dataResponseBlock:^(NSData *data, NSURLResponse *response, NSError *error) {
+        [completionExpectation fulfill];
+    }];
+
+    NSString *userAgent = task.currentRequest.allHTTPHeaderFields[@"User-Agent"];
+    NSString *expectedUserAgent = [SalesforceSDKManager sharedManager].userAgentString(@"");
+    XCTAssertEqualObjects(userAgent, expectedUserAgent,
+                          @"SFNetwork must safely copy an immutable request before adding User-Agent");
+    [task cancel];
+    [self waitForExpectations:@[completionExpectation] timeout:5];
 }
 
 @end

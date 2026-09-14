@@ -26,6 +26,7 @@
 #import "SyncManagerTestCase.h"
 #import "MobileSyncSDKManager.h"
 #import "SFSoqlSyncDownTarget.h"
+#import <MobileSync/MobileSync-Swift.h>
 
 @interface SFSDKSyncsConfigTests : SyncManagerTestCase
 
@@ -132,6 +133,23 @@
          expectedName:@"soqlSyncDown"
        expectedTarget:[SFSoqlSyncDownTarget
                        newSyncTarget:@"SELECT Id, Name, LastModifiedDate FROM Account"]
+      expectedOptions:[SFSyncOptions newSyncOptionsForSyncDown:SFSyncStateMergeModeOverwrite]
+       expectedStatus:SFSyncStateStatusNew
+     expectedProgress:0
+    expectedTotalSize:-1];
+}
+
+- (void) testSoqlSyncDownWithBatchSizeFromConfig {
+    [self.sdkManager setupUserSyncsFromDefaultConfig];
+    
+    SFSyncState* sync = [self.syncManager getSyncStatusByName:@"soqlSyncDownWithBatchSize"];
+    XCTAssertEqualObjects(sync.soupName, @"accounts");
+    [self checkStatus:sync
+         expectedType:SFSyncStateSyncTypeDown
+           expectedId:sync.syncId
+         expectedName:@"soqlSyncDown"
+       expectedTarget:[SFSoqlSyncDownTarget
+                       newSyncTarget:@"SELECT Id, Name, LastModifiedDate FROM Account" maxBatchSize:200]
       expectedOptions:[SFSyncOptions newSyncOptionsForSyncDown:SFSyncStateMergeModeOverwrite]
        expectedStatus:SFSyncStateStatusNew
      expectedProgress:0
@@ -308,7 +326,8 @@
                                                     newWithSObjectType:@"Account"
                                                     soupName:@"accounts"
                                                     idFieldName:@"IdX"
-                                                    modificationDateFieldName:@"LastModifiedDateX"]
+                                                    modificationDateFieldName:@"LastModifiedDateX"
+                                                    externalIdFieldName:@"ExternalIdX"]
                        parentCreateFieldlist:@[@"IdX",@"Name", @"Description"]
                        parentUpdateFieldlist:@[@"Name", @"Description"]
                        childrenInfo:[SFChildrenInfo
@@ -317,7 +336,8 @@
                                      soupName:@"contacts"
                                      parentIdFieldName:@"AccountId"
                                      idFieldName:@"IdY"
-                                     modificationDateFieldName:@"LastModifiedDateY"]
+                                     modificationDateFieldName:@"LastModifiedDateY"
+                                     externalIdFieldName:@"ExternalIdY"]
                        childrenCreateFieldlist:@[@"LastName", @"AccountId"]
                        childrenUpdateFieldlist:@[@"FirstName", @"AccountId"]
                        relationshipType:SFParentChildrenRelationpshipMasterDetail]
@@ -327,6 +347,29 @@
     expectedTotalSize:-1];
 }
 
+- (void)testBriefcaseSyncDownFromConfig {
+    [self.sdkManager setupUserSyncsFromDefaultConfig];
+    SFSyncState *sync = [self.syncManager getSyncStatusByName:@"briefcaseSyncDown"];
 
+    [self checkStatus:sync
+         expectedType:SFSyncStateSyncTypeDown
+           expectedId:sync.syncId
+         expectedName:@"briefcaseSyncDown"
+       expectedTarget:[[SFBriefcaseSyncDownTarget alloc]
+                       initWithInfos:@[[[SFBriefcaseObjectInfo alloc] initWithSoupName:@"accounts"
+                                                                          sobjectType:@"Account"
+                                                                            fieldlist:@[@"Name", @"Description"]
+                                                                          idFieldName:nil
+                                                            modificationDateFieldName:nil],
+                                      [[SFBriefcaseObjectInfo alloc] initWithSoupName:@"contacts"
+                                                                          sobjectType:@"Contact"
+                                                                            fieldlist:@[@"FirstName"]
+                                                                          idFieldName:@"IdX"
+                                                            modificationDateFieldName:@"LastModifiedDateX"]]]
+      expectedOptions:[SFSyncOptions newSyncOptionsForSyncDown:SFSyncStateMergeModeOverwrite]
+       expectedStatus:SFSyncStateStatusNew
+     expectedProgress:0
+    expectedTotalSize:-1];
+}
 
 @end

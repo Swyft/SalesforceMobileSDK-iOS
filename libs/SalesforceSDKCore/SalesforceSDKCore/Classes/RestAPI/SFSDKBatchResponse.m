@@ -22,14 +22,15 @@ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWIS
 WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#import "SFSDKBatchResponse+Internal.h"
+#import "SFSDKBatchResponse.h"
 
 @implementation SFSDKBatchResponse
 
 -(instancetype)initWith:(NSDictionary *)dict {
     if (self=[super init]) {
        _hasErrors =  [[dict objectForKey:@"hasErrors"] boolValue];
-       _results =  [dict objectForKey:@"results"];
+       NSArray *results = [dict objectForKey:@"results"];
+       _results = [results isKindOfClass:[NSArray class]] ? results : @[];
     }
     return self;
 }

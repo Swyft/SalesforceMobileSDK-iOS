@@ -40,8 +40,6 @@
 
 @property (nonatomic, assign) BOOL requiresAuthentication;
 
-@property (nullable, nonatomic, strong) id<SFRestDelegate> instrDelegateInternal;
-
 @property (nullable, nonatomic, strong) id<SFRestRequestDelegate> instrumentationDelegateInternal;
 
 - (void)removeActiveRequestObject:(nonnull SFRestRequest *)request;
@@ -54,11 +52,18 @@
  */
 - (BOOL)forceTimeoutRequest:(nonnull SFRestRequest *)req;
 
-- (void)send:(nonnull SFRestRequest *)request delegate:(nullable id<SFRestDelegate>)delegate shouldRetry:(BOOL)shouldRetry;
-
 - (nonnull NSString *)computeAPIVersion:(nullable NSString *)apiVersion;
 
 + (void)removeSharedInstanceWithUser:(nonnull SFUserAccount *)user;
+
+/**
+ Test-only hook invoked immediately before +sharedInstanceWithUser: resolves the
+ current user, i.e. before it enters the SFRestAPI class monitor. Lets a regression
+ pause a thread at the class-monitor/currentUser seam to deterministically reproduce
+ the multi-user logout/login lock-ordering deadlock. For testing only; always nil in
+ application code.
+ */
+@property (class, nonatomic, copy, nullable) void (^currentUserResolutionHookForTesting)(void);
 
 @end
 

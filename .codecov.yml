@@ -1,0 +1,114 @@
+# Validate changes to this class with: curl -X POST --data-binary @.codecov.yml https://codecov.io/validate
+
+codecov:
+  branch: dev
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...80"
+
+  status:
+    # Overall Libarary Requirements
+    project:
+      default: false  # disable the default status that measures entire project
+      SalesforceAnalytics:
+        threshold: 0%
+        paths: 
+          - "libs/SalesforceAnalytics/SalesforceAnalytics/"
+        flags: 
+          - SalesforceAnalytics
+      SalesforceSDKCommon:
+        threshold: 0%
+        paths: 
+          - "libs/SalesforceSDKCore/SalesforceSDKCommon/"
+        flags: 
+          - SalesforceSDKCommon
+      SalesforceSDKCore:
+        threshold: 0%
+        paths: 
+          - "libs/SalesforceSDKCore/SalesforceSDKCore/"
+        flags: 
+          - SalesforceSDKCore
+      SmartStore:
+        threshold: 0%
+        paths: 
+          - "libs/SmartStore/SmartStore/"
+        flags: 
+          - SmartStore
+      MobileSync:
+        threshold: 0%
+        paths: 
+          - "libs/MobileSync/MobileSync/"
+        flags: 
+          - MobileSync
+
+    # Pull Request Requirements
+    patch: 
+      SalesforceAnalytics:
+        target: 80%
+        paths: 
+          - "libs/SalesforceAnalytics/SalesforceAnalytics/"
+        flags: 
+          - SalesforceAnalytics
+      SalesforceSDKCommon:
+        target: 80%
+        paths: 
+          - "libs/SalesforceSDKCore/SalesforceSDKCommon/"
+        flags: 
+          - SalesforceSDKCommon
+      SalesforceSDKCore:
+        target: 80%
+        paths: 
+          - "libs/SalesforceSDKCore/SalesforceSDKCore/"
+        flags: 
+          - SalesforceSDKCore
+      SmartStore:
+        target: 80%
+        paths: 
+          - "libs/SmartStore/SmartStore/"
+        flags: 
+          - SmartStore
+      MobileSync:
+        target: 80%
+        paths: 
+          - "libs/MobileSync/MobileSync/"
+        flags: 
+          - MobileSync
+
+ignore:
+  - "shared"
+  - "native"
+  - "libs/**/*Test*/*"
+  - "**/TestSetupUtils*"
+
+flag_management:
+  default_rules: # the rules that will be followed for any flag added, generally
+    carryforward: true
+
+# PR comment layout
+comment:
+  layout: "diff, components, files"
+  behavior: default
+  require_changes: false
+
+component_management:
+  individual_components:
+    - component_id: SalesforceAnalytics  # this is an identifier that should not be changed
+      name: Analytics  # this is a display name, and can be changed freely
+      paths: 
+        - "libs/SalesforceAnalytics/SalesforceAnalytics/"
+    - component_id: SalesforceSDKCommon
+      name: Common
+      paths: 
+        - "libs/SalesforceSDKCommon/SalesforceSDKCommon/"
+    - component_id: SalesforceSDKCore
+      name: Core
+      paths: 
+        - "libs/SalesforceSDKCore/SalesforceSDKCore/"
+    - component_id: SmartStore
+      paths: 
+        - "libs/SmartStore/SmartStore/"
+    - component_id: MobileSync
+      paths: 
+        - "libs/MobileSync/MobileSync/"

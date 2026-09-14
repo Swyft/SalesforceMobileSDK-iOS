@@ -23,7 +23,7 @@
  */
 
 #import <Foundation/Foundation.h>
-#import "SalesforceSDKConstants.h"
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 NS_ASSUME_NONNULL_BEGIN
 
 /** Extension to NSData class to provide common functions. Added functionality includes:
@@ -38,29 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
  @param length The number of bytes of random data to return.
  @return The specified quantity of random bytes or `nil` if an error occurs.
  */
-- (nullable NSData *)randomDataOfLength:(size_t)length;
-
-/**Creates a base64 encoded string for this NSData object.
- @return A base64 encoded version of the data.
- */
--(NSString *)newBase64Encoding;
-
-/**Returns a base64 encoded string for this NSData object.
- @return A base64 encoded version of the data.
- */
--(NSString *)base64Encode;
-
-/**Creates a base64 encoding of this NSData. Similar to newBase64Encoding.
- @param base64 The base64 encoding to use in the new NSData object.
- @return The base64 encoded NSData object. 
- */
--(id)initWithBase64String:(NSString *)base64;
-
-/** Creates an NSData object from a base64 encoded string.
- @param encoding The string to convert to NSData.
- @return A base64-encoded string version of this object's data.
- */
-+(NSData *)dataFromBase64String:(NSString *)encoding;
+- (nullable NSData *)sfsdk_randomDataOfLength:(size_t)length;
 
 @end
 
@@ -68,26 +46,10 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @interface NSData (SFSHA)
 
-/**Derives  a 16-byte  hex encoded string .
- @return 16-byte  hex encoded string.
- */
--(NSString *)digest;
-
-/** Derives  a  sha1  hex encoded string.
- @return md5 version of data.
- */
--(NSString *)sha1;
-
-/**Derives  a  sha224  hex encoded string.
- @return md5 version of data.
- */
--(NSString *)sha224;
-
 /**Derives  a  sha256  hex encoded string.
  @return md5 version of data.
  */
--(NSString *)sha256;
-
+-(NSString *)sfsdk_sha256;
 
 @end
 
@@ -97,22 +59,24 @@ NS_ASSUME_NONNULL_BEGIN
 /**Converts this data to gzip uncompressed format.
  @return This data in gzip uncompressed format.
 */
--(nullable NSData *)gzipInflate;
+- (nullable NSData *)sfsdk_gzipInflate;
 
 /**Converts this data to gzip compressed format.
  @return This data in gzip compressed format.
  */
--(nullable NSData *)gzipDeflate;
+- (nullable NSData *)sfsdk_gzipDeflate;
+
 @end
 
 /**
  Provides hex string conversion support.
  */
 @interface NSData (SFHexSupport)
+
 /** Creates a hex string representation of this object's data.
  @return Hex string representation of this object's data.
  */
-- (NSString*)newHexStringFromBytes;
+- (NSString*)sfsdk_newHexStringFromBytes;
 
 @end
 

@@ -27,13 +27,18 @@
  */
 
 #import "SFSDKLoginHostListViewController.h"
-#import "SFSDKNewLoginHostViewController.h"
 #import "SFSDKLoginHostStorage.h"
 #import "SFSDKLoginHost.h"
 #import "SFSDKResourceUtils.h"
 #import "SFManagedPreferences.h"
 #import "SFUserAccountManager.h"
+#import "SFUserAccountManager+Internal.h"
 #import "SFSDKViewUtils.h"
+#import "SFSDKLoginViewControllerConfig.h"
+#import "SFSDKWindowManager.h"
+#import "SalesforceSDKManager.h"
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
+
 static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCellIdentifier";
 
 @interface SFSDKLoginHostListViewController () <UINavigationControllerDelegate>
@@ -98,9 +103,10 @@ static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCel
  * Invoked when the user presses the Add button. This method presents the new login host view.
  */
 - (void)showAddLoginHost:(id)sender {
-    SFSDKNewLoginHostViewController *detailViewController = [[SFSDKNewLoginHostViewController alloc] initWithStyle:UITableViewStyleGrouped];
-    detailViewController.loginHostListViewController = self;
-    
+    UIViewController *detailViewController = [SFSDKNewLoginHostViewController viewControllerWithConfig:self.config saveAction:^(NSString * _Nonnull host, NSString * _Nullable label) {
+        [self addLoginHost:[SFSDKLoginHost hostWithName:label host:host deletable:YES]];
+    }];
+
     if ([self.delegate respondsToSelector:@selector(hostListViewController:willPresentLoginHostViewController:)]) {
         [self.delegate hostListViewController:self willPresentLoginHostViewController:self];
     }
@@ -127,10 +133,24 @@ static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCel
 
 - (void)viewDidLoad {
 
-    // Displays the 'Add Server' button only if the MDM policy allows us to.
+    // Right bar buttons. In the forced-advanced-auth path the gear / "Login Options" menu
+    // is shown alongside the Add button (matching the in-app login screen). The 'Add Server'
+    // button is shown only if the MDM policy allows it.
+    NSMutableArray<UIBarButtonItem *> *rightItems = [NSMutableArray array];
+    UIBarButtonItem *retryBiometricButton = [self retryBiometricButton];
+    if (retryBiometricButton) {
+        [rightItems addObject:retryBiometricButton];
+    }
+    UIBarButtonItem *settingsButton = [self loginOptionsButton];
+    if (settingsButton) {
+        [rightItems addObject:settingsButton];
+    }
     SFManagedPreferences *managedPreferences = [SFManagedPreferences sharedPreferences];
     if (!(managedPreferences.hasManagedPreferences && managedPreferences.onlyShowAuthorizedHosts) && !self.hidesAddButton) {
-        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(showAddLoginHost:)];
+        [rightItems addObject:[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(showAddLoginHost:)]];
+    }
+    if (rightItems.count > 0) {
+        self.navigationItem.rightBarButtonItems = rightItems;
     }
     self.title = [SFSDKResourceUtils localizedString:@"LOGIN_CHOOSE_SERVER"];
     self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc]
@@ -138,10 +158,15 @@ static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCel
                                              style:UIBarButtonItemStylePlain
                                              target:nil
                                              action:nil];
-    if (!self.hidesCancelButton) {
+
+    // Left bar button. In the forced-advanced-auth path the back button replaces Cancel when
+    // there is an account to return to (matching the WebView screen); otherwise Cancel is used.
+    if (self.presentedAsLoginScreen && [self shouldShowBackButton]) {
+        self.navigationItem.leftBarButtonItem = [self createBackButton];
+    } else if (!self.hidesCancelButton) {
         self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancelLoginPicker:)];
     }
-    
+
     // Make sure the current login host exists.
     NSUInteger index = [self indexOfCurrentLoginHost];
     if (NSNotFound == index) {
@@ -159,6 +184,13 @@ static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCel
     [self setEdgesForExtendedLayout:UIRectEdgeNone];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear: animated];
+    if (UIAccessibilityIsVoiceOverRunning()) {
+        UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.view);
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     // We need to make sure the table is refreshed
     // and the size updated when we appear because
@@ -172,12 +204,132 @@ static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCel
 
 - (void)setupBrandingForNavBar {
     [self.navigationController.navigationBar setTranslucent:NO];
-    [SFSDKViewUtils styleNavigationBar:self.navigationController.navigationBar config:[SFUserAccountManager sharedInstance].loginViewControllerConfig];
+    [SFSDKViewUtils styleNavigationBar:self.navigationController.navigationBar config:[SFUserAccountManager sharedInstance].loginViewControllerConfig classes:@[[self.navigationController class]]];
 }
 
 #pragma mark - Action Methods
 - (void)cancelLoginPicker:(id)sender {
     [self delegateDidCancelLoginHost];
+}
+
+- (void)backToPreviousHost:(id)sender {
+    [self handleBackButtonAction];
+}
+
+#pragma mark - Forced Advanced Auth Chrome
+// The back button and gear / "Login Options" menu below mirror SFLoginViewController. They are
+// added when presentedAsLoginScreen is set, i.e. when the host list is the screen the user lands
+// on in the forced-advanced-auth path (SFLoginViewController is never created there). The two are
+// gated independently: the back button by -shouldShowBackButton (account/flow state), the gear by
+// dev support. presentedAsLoginScreen only gates whether this screen owns that chrome at all.
+
+/**
+ * Mirrors SFLoginViewController -shouldShowBackButton: shows the back button when there is an
+ * account to return to, or when an idp / web-auth-fallback flow is in progress.
+ */
+- (BOOL)shouldShowBackButton {
+    if ([[SFBiometricAuthenticationManagerInternal shared] locked]) {
+        return NO;
+    }
+
+    SFUserAccountManager *accountManager = [SFUserAccountManager sharedInstance];
+    if (self.presentedAsLoginScreen
+        && [self.config isKindOfClass:[SFSDKLoginViewControllerConfig class]]
+        && ((SFSDKLoginViewControllerConfig *)self.config).shouldDisplayBackButton) {
+        return YES;
+    }
+    if (accountManager.sdk_idpEnabled || accountManager.shouldFallbackToWebAuthentication) {
+        return YES;
+    }
+    NSInteger totalAccounts = accountManager.allUserAccounts.count;
+    return (totalAccounts > 0 && accountManager.currentUser);
+}
+
+- (UIBarButtonItem *)createBackButton {
+    UIImage *image = [[SFSDKResourceUtils imageNamed:@"globalheader-back-arrow"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    return [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain target:self action:@selector(backToPreviousHost:)];
+}
+
+/**
+ * Mirrors SFLoginViewController -handleBackButtonAction: stops the in-flight auth and dismisses
+ * the auth window so the user returns to the account list.
+ */
+- (void)handleBackButtonAction {
+    UIScene *scene = self.view.window.windowScene;
+    SFUserAccountManager *accountManager = [SFUserAccountManager sharedInstance];
+    [accountManager stopCurrentAuthentication:nil];
+
+    if (accountManager.shouldFallbackToWebAuthentication) {
+        accountManager.shouldFallbackToWebAuthentication = NO;
+        [accountManager loginWithCompletion:nil failure:nil];
+    }
+
+    if (!accountManager.sdk_idpEnabled) {
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController.presentedViewController dismissViewControllerAnimated:NO completion:^{
+            [[[SFSDKWindowManager sharedManager] authWindow:scene] dismissWindow];
+        }];
+    } else {
+        [[[SFSDKWindowManager sharedManager] authWindow:scene].viewController dismissViewControllerAnimated:NO completion:nil];
+    }
+}
+
+/**
+ * Builds the gear menu hosting the debug-only "Login Options" entry. Returns nil unless this is
+ * the forced-advanced-auth host list and dev support is enabled; the menu's only purpose here is
+ * to surface Login Options (the WebView-specific clear-cookies/cache/reload actions do not apply
+ * to the host list, where no in-app WebView is shown).
+ */
+- (nullable UIBarButtonItem *)loginOptionsButton {
+    if (!self.presentedAsLoginScreen || ![[SalesforceSDKManager sharedManager] isDevSupportEnabled]) {
+        return nil;
+    }
+
+    UIImage *image = [[SFSDKResourceUtils imageNamed:@"login-window-gear"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    __weak typeof(self) weakSelf = self;
+    UIAction *loginOptions = [UIAction actionWithTitle:[SFSDKResourceUtils localizedString:@"LOGIN_OPTIONS"]
+                                                 image:nil
+                                            identifier:nil
+                                               handler:^(__kindof UIAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        UIViewController *configPicker = [LoginOptionsViewController makeViewControllerOnConfigurationCompleted:^{
+            [strongSelf dismissViewControllerAnimated:YES completion:^{
+                [strongSelf delegateDidChangeLoginOptions];
+            }];
+        }];
+        [strongSelf presentViewController:configPicker animated:YES completion:nil];
+    }];
+
+    UIMenu *menu = [UIMenu menuWithTitle:@"" children:@[loginOptions]];
+    UIBarButtonItem *settingsButton = [[UIBarButtonItem alloc] initWithImage:image menu:menu];
+    settingsButton.accessibilityLabel = [SFSDKResourceUtils localizedString:@"LOGIN_SETTINGS_BUTTON"];
+    settingsButton.accessibilityIdentifier = @"settings";
+    return settingsButton;
+}
+
+/**
+ * Nav-bar button that re-presents the biometric unlock prompt. This is the picker-screen
+ * counterpart to SFLoginViewController's biometricButton for cases where auto-presentation
+ * didn't fire, was dismissed, or is disabled.  Only appears when biometric is actually locked,
+ * opted-in, and available.
+ */
+- (nullable UIBarButtonItem *)retryBiometricButton {
+    if (!self.presentedAsLoginScreen || ![[SFBiometricAuthenticationManagerInternal shared] showNativeLoginButton]) {
+        return nil;
+    }
+
+    UIBarButtonItem *retryButton = [[UIBarButtonItem alloc] initWithTitle:[SFSDKResourceUtils localizedString:@"biometricLoginButton"]
+                                                                     style:UIBarButtonItemStylePlain
+                                                                    target:self
+                                                                    action:@selector(presentBioAuthAction:)];
+    retryButton.accessibilityIdentifier = @"retryBiometric";
+    return retryButton;
+}
+
+/**
+ * Mirrors SFLoginViewController -presentBioAuthAction: verbatim.
+ */
+- (void)presentBioAuthAction:(id)sender {
+    [[SFBiometricAuthenticationManagerInternal shared] presentBiometricWithScene:self.view.window.windowScene];
 }
 
 #pragma mark - Delegate Wrapper Methods
@@ -197,6 +349,12 @@ static NSString * const SFDCLoginHostListCellIdentifier = @"SFDCLoginHostListCel
 - (void)delegateDidCancelLoginHost {
     if ([self.delegate respondsToSelector:@selector(hostListViewControllerDidCancelLoginHost:)]) {
         [self.delegate hostListViewControllerDidCancelLoginHost:self];
+    }
+}
+
+- (void)delegateDidChangeLoginOptions {
+    if ([self.delegate respondsToSelector:@selector(hostListViewControllerDidChangeLoginOptions:)]) {
+        [self.delegate hostListViewControllerDidChangeLoginOptions:self];
     }
 }
 

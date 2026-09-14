@@ -23,6 +23,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -36,13 +37,13 @@ NS_ASSUME_NONNULL_BEGIN
  * @brief Creates a base64url string based on the data.  See RFC 4648.
  * @return The base64url string based on the data.
  */
-- (NSString *)msdkBase64UrlString;
+- (NSString *)sfsdk_base64UrlString;
 
 /*!
  * @brief Creates an SHA256 hash of the given data.
  * @return The SHA256 hash of the given data.
  */
-- (nullable NSData *)msdkSha256Data;
+- (nullable NSData *)sfsdk_sha256Data;
 
 @end
 

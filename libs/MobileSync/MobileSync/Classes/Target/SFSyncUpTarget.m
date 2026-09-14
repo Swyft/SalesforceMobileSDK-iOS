@@ -23,7 +23,7 @@
  */
 
 #import "SFSyncUpTarget+Internal.h"
-#import "SFBatchSyncUpTarget.h"
+#import <MobileSync/MobileSync-Swift.h>
 #import "SFMobileSyncConstants.h"
 #import "SFMobileSyncNetworkUtils.h"
 #import "SFMobileSyncSyncManager.h"
@@ -107,8 +107,8 @@ typedef void (^SFSyncUpRecordModDateBlock)(SFRecordModDate *remoteModDate);
         NSString *targetTypeString = (dict == nil || dict[kSFSyncTargetTypeKey] == nil ? kSFSyncUpTargetTypeRestStandard : dict[kSFSyncTargetTypeKey]);
         switch ([self targetTypeFromString:targetTypeString]) {
             case SFSyncUpTargetTypeRestStandard:
-                // Default sync up target (it's SFBatchSyncUpTarget starting in Mobile SDK 7.1)
-                return [[SFBatchSyncUpTarget alloc] initWithDict:dict];
+                // Default sync up target (it's SFCollectionSyncUpTarget starting in Mobile SDK 10.1)
+                return [[SFCollectionSyncUpTarget alloc] initWithDict:dict];
             case SFSyncUpTargetTypeCustom:
                 [SFSDKMobileSyncLogger e:[self class] format:@"%@ Custom class name not specified.", NSStringFromSelector(_cmd)];
                 return nil;
@@ -145,6 +145,41 @@ typedef void (^SFSyncUpRecordModDateBlock)(SFRecordModDate *remoteModDate);
     }
 }
 
+- (void)areNewerThanServer:(SFMobileSyncSyncManager *)syncManager
+                   records:(NSArray<NSDictionary*>*)records
+              resultBlock:(SFSyncUpRecordsNewerThanServerBlock)resultBlock
+{
+    [self isNewerThanServer:syncManager
+                    records:records
+                      index:0
+                     result:[NSMutableDictionary new]
+                resultBlock:resultBlock];
+}
+
+- (void)isNewerThanServer:(SFMobileSyncSyncManager *)syncManager
+                   records:(NSArray<NSDictionary*>*)records
+                     index:(NSUInteger)i
+                    result:(NSMutableDictionary*)result
+              resultBlock:(SFSyncUpRecordsNewerThanServerBlock)resultBlock
+{
+    if (i < records.count) {
+        NSDictionary* record = records[i];
+        NSNumber* storeId = record[SOUP_ENTRY_ID];
+        __weak typeof(self) weakSelf = self;
+        [self isNewerThanServer:syncManager record:record resultBlock:^(BOOL isNewerThanServer) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            result[storeId] = [NSNumber numberWithBool:isNewerThanServer];
+            [strongSelf isNewerThanServer:syncManager
+                                  records:records
+                                    index:i+1
+                                   result:result
+                              resultBlock:resultBlock];
+        }];
+    } else {
+        resultBlock(result);
+    }
+}
+
 
 - (void)createOnServer:(SFMobileSyncSyncManager *)syncManager
                 record:(NSDictionary*)record
@@ -156,7 +191,11 @@ typedef void (^SFSyncUpRecordModDateBlock)(SFRecordModDate *remoteModDate);
     NSString* objectType = [SFJsonUtils projectIntoJson:record path:kObjectTypeField];
     NSDictionary * fields = [self buildFieldsMap:record fieldlist:fieldlist];
     NSString* externalId = self.externalIdFieldName ? record[self.externalIdFieldName] : nil;
-    if (externalId) {
+    if (externalId
+        // the following check is there for the case
+        // where the the external id field is the id field
+        // and the field is populated by a local id
+        && ![SFSyncTarget isLocalId:externalId]) {
         [self upsertOnServer:objectType fields:fields externalId:externalId completionBlock:completionBlock failBlock:failBlock];
     } else {
         [self createOnServer:objectType fields:fields completionBlock:completionBlock failBlock:failBlock];
@@ -305,10 +344,7 @@ typedef void (^SFSyncUpRecordModDateBlock)(SFRecordModDate *remoteModDate);
                                 }
     ];
 }
-/**
- Return true if local mod date is greater than remote mod date
- NB: also return true if both were deleted or if local mod date is missing
-*/
+
 - (BOOL)isNewerThanServer:(SFRecordModDate*)localModDate
         remoteModDate:(SFRecordModDate*)remoteModDate
 {

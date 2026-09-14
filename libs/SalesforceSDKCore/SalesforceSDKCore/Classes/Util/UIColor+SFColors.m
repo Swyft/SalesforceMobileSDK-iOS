@@ -35,9 +35,9 @@
     return [UIColor colorWithRed:0.0f/255.0f green:112.0f/255.0f blue:210.0f/255.0f alpha:1.0f];
 }
 
-+ (UIColor *)colorFromHexValue:(NSString *)hexString {
++ (UIColor *)sfsdk_colorFromHexValue:(NSString *)hexString {
     UIColor *color = nil;
-    hexString = [[self class] msdk_sixDigitHexFromString:hexString];
+    hexString = [[self class] sfsdk_sixDigitHexFromString:hexString];
     if ([hexString length] > 0) {
         unsigned rgbValue = 0;
         NSScanner *scanner = [NSScanner scannerWithString:hexString];
@@ -47,7 +47,7 @@
     return color;
 }
 
-+ (NSString *)msdk_sixDigitHexFromString:(NSString *)hexString {
++ (NSString *)sfsdk_sixDigitHexFromString:(NSString *)hexString {
     if (hexString.length == 0) {
         return nil;
     }
@@ -70,17 +70,11 @@
 }
 
 + (UIColor *)salesforceSystemBackgroundColor {
-    if (@available(iOS 13.0, *)) {
-        return [UIColor systemBackgroundColor];
-    }
-    return [UIColor whiteColor];
+    return [UIColor systemBackgroundColor];
 }
 
 + (UIColor *)salesforceLabelColor {
-    if (@available(iOS 13.0, *)) {
-        return [UIColor labelColor];
-    }
-    return [UIColor blackColor];
+    return [UIColor labelColor];
 }
 
 + (UIColor *)salesforceBackgroundRowSelectedColor {
@@ -115,51 +109,21 @@
     return [UIColor colorWithRed: 245.0/255.0 green:246.0/255.0 blue: 250.0/255.0 alpha: 1.0];
 }
 
-+ (UIColor *)passcodeViewBackgroundColor {
-    UIColor *lightStyleColor = [UIColor colorWithRed:245.0f/255.0f green:246.0f/255.0f blue:250.0f/255.0f alpha:1.0f];
-    UIColor *darkStyleColor = [UIColor colorWithRed:8.0f/255.0f green:7.0f/255.0f blue:7.0f/255.0f alpha:1.0f];
-    return [UIColor colorForLightStyle:lightStyleColor darkStyle:darkStyleColor];
++ (UIColor *)salesforceNavBarTintColor {
+    return [UIColor whiteColor];
 }
 
-+ (UIColor *)passcodeViewSecondaryBackgroundColor {
-    UIColor *lightStyleColor = [UIColor whiteColor];
-    UIColor *darkStyleColor = [UIColor colorWithRed:43.0f/255.0f green:40.0f/255.0f blue:38.0f/255.0f alpha:1.0f];
-    return [UIColor colorForLightStyle:lightStyleColor darkStyle:darkStyleColor];
++ (UIColor *)sfsdk_colorForLightStyle:(UIColor *)lightStyleColor darkStyle:(UIColor *)darkStyleColor {
+    return [[UIColor alloc] initWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traitCollection) {
+                if (traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                    return darkStyleColor;
+                } else {
+                    return lightStyleColor;
+                }
+            }];
 }
 
-+ (UIColor *)passcodeViewTextColor {
-    UIColor *lightStyleColor = [UIColor colorWithRed:22.0f/255.0f green:50.0f/255.0f blue:92.0f/255.0f alpha:1.0f];
-    UIColor *darkStyleColor = [UIColor colorWithRed:240.0f/255.0f green:240.0f/255.0f blue:240.0f/255.0f alpha:1.0f];
-    return [UIColor colorForLightStyle:lightStyleColor darkStyle:darkStyleColor];
-}
-
-+ (UIColor *)passcodeViewBorderColor {
-    UIColor *lightStyleColor = [UIColor colorWithRed:217.0f/255.0f green:221.0f/255.0f blue:230.0f/255.0f alpha:1.0f];
-    UIColor *darkStyleColor = [UIColor colorWithRed:62.0f/255.0f green:62.0f/255.0f blue:60.0f/255.0f alpha:1.0f];
-    return [UIColor colorForLightStyle:lightStyleColor darkStyle:darkStyleColor];
-}
-
-+ (UIColor *)passcodeViewNavBarColor {
-    UIColor *lightStyleColor = [UIColor whiteColor];
-    UIColor *darkStyleColor = [UIColor colorWithRed:43.0f/255.0f green:40.0f/255.0f blue:38.0f/255.0f alpha:1.0f];
-    return [UIColor colorForLightStyle:lightStyleColor darkStyle:darkStyleColor];
-}
-
-+ (UIColor *)colorForLightStyle:(UIColor *)lightStyleColor darkStyle:(UIColor *)darkStyleColor {
-    if (@available(iOS 13.0, *)) {
-        return [[UIColor alloc] initWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traitCollection) {
-            if (traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return darkStyleColor;
-            } else {
-                return lightStyleColor;
-            }
-        }];
-    }
-    return lightStyleColor;
-}
-
-
-- (NSString *)hexStringFromColor {
+- (NSString *)sfsdk_hexStringFromColor {
     NSAssert (self.canProvideRGBComponents, @"Must be a RGB color to use hexStringFromColor");
     
     CGFloat r, g, b;

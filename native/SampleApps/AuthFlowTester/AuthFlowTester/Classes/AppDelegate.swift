@@ -1,0 +1,176 @@
+/*
+ AppDelegate.swift
+ AuthFlowTester
+ 
+ Copyright (c) 2025-present, salesforce.com, inc. All rights reserved.
+ 
+ Redistribution and use of this software in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+ * Redistributions of source code must retain the above copyright notice, this list of conditions
+ and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright notice, this list of
+ conditions and the following disclaimer in the documentation and/or other materials provided
+ with the distribution.
+ * Neither the name of salesforce.com, inc. nor the names of its contributors may be used to
+ endorse or promote products derived from this software without specific prior written
+ permission of salesforce.com, inc.
+ 
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+ IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+import UIKit
+import SalesforceSDKCommon
+import SalesforceSDKCore
+import MobileCoreServices
+import UniformTypeIdentifiers
+
+@UIApplicationMain
+class AppDelegate: UIResponder, UIApplicationDelegate {
+    var window: UIWindow?
+
+    static let uiTestLastTokenRequestUserAgentDefaultsKey = "AuthFlowTesterLastTokenRequestUserAgent"
+
+    private struct UITestLoginHost {
+        let name: String
+        let host: String
+    }
+
+    private static let uiTestLoginHostsInfoKey = "SFDCOAuthLoginHosts"
+    
+    override init() {
+        super.init()
+
+        #if DEBUG
+        configureTokenRequestUserAgentCaptureForUITesting()
+        #endif
+        SalesforceManager.initializeSDK()
+        #if DEBUG
+        let shouldResetForUITesting = CommandLine.arguments.contains("--resetSDKForUITesting")
+        if shouldResetForUITesting {
+            SalesforceManager.resetForUITesting()
+        }
+        seedUITestLoginHosts(selectDefaultHost: shouldResetForUITesting)
+        if CommandLine.arguments.contains("--disableDPoPAtStart") {
+            SalesforceManager.shared.usesDPoP = false
+        }
+        if CommandLine.arguments.contains("--invalidateCurrentUserAccessTokenAtStart") {
+            UserAccountManager.shared.currentUserAccount?.credentials.setValue("invalid-access-token", forKey: "accessToken")
+        }
+        #endif
+        SalesforceManager.shared.appDisplayName = "Auth Flow Tester"
+        UserAccountManager.shared.navigationPolicyForAction = { webView, action in
+            if let url = action.request.url, url.absoluteString == "https://www.salesforce.com/us/company/privacy" {
+                SFApplicationHelper.open(url, options: [:], completionHandler: nil)
+                return .cancel
+            }
+            return .allow
+        }
+    }
+
+    #if DEBUG
+    /// Captures the final User-Agent attached by SFNetwork to token-endpoint requests. This is
+    /// enabled only for UI tests so production app behavior and diagnostics remain unchanged.
+    private func configureTokenRequestUserAgentCaptureForUITesting() {
+        UserDefaults.standard.removeObject(forKey: Self.uiTestLastTokenRequestUserAgentDefaultsKey)
+        guard CommandLine.arguments.contains("--captureTokenRequestUserAgent") else { return }
+
+        // Replaces SFNetwork's process-global metrics sink (and any prior handler); DEBUG + explicit launch argument only.
+        Network.metricsCollectedAction = { _, task, _ in
+            guard task.originalRequest?.url?.path == "/services/oauth2/token",
+                  let userAgent = task.originalRequest?.value(forHTTPHeaderField: "User-Agent") else {
+                return
+            }
+            UserDefaults.standard.set(userAgent, forKey: Self.uiTestLastTokenRequestUserAgentDefaultsKey)
+        }
+    }
+    #endif
+    
+    // MARK: - App delegate lifecycle
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        self.window = UIWindow(frame: UIScreen.main.bounds)
+
+        // If you wish to register for push notifications, uncomment the line below.  Note that,
+        // if you want to receive push notifications from Salesforce, you will also need to
+        // implement the application:didRegisterForRemoteNotificationsWithDeviceToken: method (below).
+        // self.registerForRemotePushNotifications()
+
+        return true
+    }
+    
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        // Uncomment the code below to register your device token with the push notification manager
+        // didRegisterForRemoteNotifications(deviceToken)
+    }
+    
+    func didRegisterForRemoteNotifications(_ deviceToken: Data) {
+        PushNotificationManager.sharedInstance().didRegisterForRemoteNotifications(withDeviceToken: deviceToken)
+        if let _ = UserAccountManager.shared.currentUserAccount?.credentials.accessToken {
+            PushNotificationManager.sharedInstance().registerForSalesforceNotifications { (result) in
+                switch (result) {
+                case .success(let successFlag):
+                    SalesforceLogger.d(AppDelegate.self, message: "Registration for Salesforce notifications status:  \(successFlag)")
+                case .failure(let error):
+                    SalesforceLogger.e(AppDelegate.self, message: "Registration for Salesforce notifications failed \(error)")
+                }
+            }
+        }
+    }
+    
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error ) {
+        // Respond to any push notification registration errors here.
+    }
+    
+    // MARK: - Private methods
+
+    /// Seeds AuthFlowTester's fixed UI-test servers after the SDK initializes.  The reset helper
+    /// intentionally clears custom hosts, so it must run before the test login flow starts.
+    /// Ordinary restarts seed missing entries without changing the selected host or session.
+    private func seedUITestLoginHosts(selectDefaultHost: Bool) {
+        guard let hosts = Bundle.main.object(forInfoDictionaryKey: Self.uiTestLoginHostsInfoKey) as? [[String: String]] else {
+            return
+        }
+
+        let uiTestHosts = hosts.compactMap { entry -> UITestLoginHost? in
+            guard let name = entry["name"], let host = entry["host"], !host.isEmpty else {
+                return nil
+            }
+            return UITestLoginHost(name: name, host: host)
+        }
+        guard let defaultHost = uiTestHosts.first else {
+            return
+        }
+
+        let storage = SFSDKLoginHostStorage.sharedInstance()
+        for host in uiTestHosts where storage.loginHost(forHostAddress: host.host) == nil {
+            storage.add(SalesforceLoginHost(name: host.name, host: host.host, deletable: false))
+        }
+
+        if selectDefaultHost {
+            UserAccountManager.shared.loginHost = defaultHost.host
+        }
+    }
+
+    func registerForRemotePushNotifications() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { (granted, error) in
+            if granted {
+                DispatchQueue.main.async {
+                    PushNotificationManager.sharedInstance().registerForRemoteNotifications()
+                }
+            } else {
+                SalesforceLogger.d(AppDelegate.self, message: "Push notification authorization denied")
+            }
+            
+            if let error = error {
+                SalesforceLogger.e(AppDelegate.self, message: "Push notification authorization error: \(error)")
+            }
+        }
+    }
+}

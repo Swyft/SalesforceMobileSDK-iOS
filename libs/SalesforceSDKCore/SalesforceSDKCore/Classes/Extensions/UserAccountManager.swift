@@ -29,7 +29,7 @@
  */
 import Foundation
 
-public enum UserAccountManagerError : Error {
+public enum UserAccountManagerError: Error {
     case loginFailed(underlyingError: Error, authInfo: AuthInfo)
     case loginJWTFailed(underlyingError: Error, authInfo: AuthInfo)
     case refreshFailed(underlyingError: Error, authInfo: AuthInfo)
@@ -37,7 +37,17 @@ public enum UserAccountManagerError : Error {
     case userSwitchFailedUnknown
 }
 
-extension UserAccountManager {
+protocol UserAccountManaging {
+    func account() -> UserAccount?
+    
+    func refresh(credentials: OAuthCredentials, _ completionBlock: @escaping (Result<(UserAccount, AuthInfo), UserAccountManagerError>) -> Void) -> Bool
+}
+
+extension UserAccountManager: UserAccountManaging {
+    // Current User Account
+    func account() -> UserAccount? {
+        return UserAccountManager.shared.currentUserAccount
+    }
     
     ///  Kick off the login process for credentials that's previously configured.
     /// - Parameter completionBlock: completion block to invoke with a success tuple (UserAccount, AuthInfo) or   UserAccountManagerError for failure wrapped in a Result type.
@@ -61,15 +71,27 @@ extension UserAccountManager {
         }
    }
 
-    /// Kick off the login process for jwt token with credentials previously configured.
+    /// Refresh the session for the given credentials.
     /// - Parameters:
-    ///   - credentials: the OAuthCredentials object
+    ///   - credentials: The credentials to refresh.
     ///   - completionBlock: completion block to invoke with a success tuple (UserAccount, AuthInfo) or   UserAccountManagerError for failure wrapped in a Result type.
    public func refresh(credentials: OAuthCredentials, _ completionBlock: @escaping (Result<(UserAccount, AuthInfo), UserAccountManagerError>) -> Void) -> Bool {
         return __refreshCredentials(credentials, completion: { (authInfo, userAccount) in
             completionBlock(Result.success((userAccount,authInfo)))
         }) { (authInfo, error) in
             completionBlock(Result.failure(.refreshFailed(underlyingError: error, authInfo: authInfo)))
+        }
+    }
+
+    /// Refresh the session for the given credentials.
+    /// - Parameter credentials: The credentials to refresh.
+    /// - Returns: A tuple of the updated `UserAccount` and `AuthInfo` on success.
+    /// - Throws: `UserAccountManagerError.refreshFailed` if the refresh fails.
+    public func refresh(credentials: OAuthCredentials) async throws -> (UserAccount, AuthInfo) {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = self.refresh(credentials: credentials) { result in
+                continuation.resume(with: result.mapError { $0 })
+            }
         }
     }
 
@@ -88,5 +110,19 @@ extension UserAccountManager {
             completionBlock(Result.success(user))
         }
     }
-    
+
+    /// Handle an authentication request with auth code from the IDP application
+    /// - Parameters:
+    ///    - url: The URL response returned to the app from the IDP application.
+    ///    - options: Dictionary of name-value pairs received from open URL
+    ///    - completion: Completion block to invoke with a UserAccount on success or UserAccountManagerError on failure wrapped in a Result type.
+    /// - Returns: true if this is a valid URL response from IDP authentication that should be handled, false otherwise.
+    @available(*, deprecated, message: "The IDP (Identity Provider) login flow is deprecated and will be removed in Salesforce Mobile SDK 15.0. Apps should use advanced (browser-based) authentication.")
+    public func handleIdentityProviderCommand(from url: URL, with options: [AnyHashable: Any], completion: @escaping (Result<(UserAccount, AuthInfo), UserAccountManagerError>) -> Void) -> Bool {
+        return __handleIDPAuthenticationCommand(url, options: options, completion: { (authInfo, userAccount) in
+            completion(Result.success((userAccount, authInfo)))
+        }) { (authInfo, error) in
+            completion(Result.failure(.loginFailed(underlyingError: error, authInfo: authInfo)))
+        }
+    }
 }

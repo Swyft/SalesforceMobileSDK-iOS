@@ -27,12 +27,14 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #import <UIKit/UIKit.h>
-#import "SFSDKUserSelectionView.h"
+#import <SalesforceSDKCore/SFSDKUserSelectionView.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 
 @class SFUserAccount;
 @class SFSDKUserSelectionTableViewController;
 
+SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.")
 @interface SFSDKUserSelectionNavViewController : UINavigationController<SFSDKUserSelectionView>
 @property (nonatomic,weak) id<SFSDKUserSelectionViewDelegate> userSelectionDelegate;
 @property (nonatomic,strong) NSDictionary *spAppOptions;

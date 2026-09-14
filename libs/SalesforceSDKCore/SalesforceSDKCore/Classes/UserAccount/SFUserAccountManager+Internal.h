@@ -44,6 +44,34 @@ typedef NS_ENUM(NSUInteger, SFSDKUserAccountManagerErrorCode) {
     SFSDKUserAccountManagerCannotEncrypt = 10005,
 };
 
+@protocol SFUserAccountPersister <NSObject>
+
+/**
+ Called when the Account manager requires to save the state of an account.
+ @param userAccount The instance of SFUserAccount making the call.
+ @param  error On output, the error if the return value is NO
+ @return YES if the account was saved properly, NO in case of error
+ */
+- (BOOL)saveAccountForUser:(nonnull SFUserAccount *)userAccount error:(NSError * _Nonnull * _Nonnull) error;
+
+/** Fetches all the accounts.
+  @param error On output, the error if the return value is NO
+  @return NSDictionary with SFUserAccountIdentity as keys and SFUserAccount as values
+  */
+- (nonnull NSDictionary<SFUserAccountIdentity *,SFUserAccount *> *)fetchAllAccounts:(NSError * _Nonnull * _Nonnull)error;
+
+/**
+ Allows you to remove the given user account.
+ @param user The user account to remove.
+ @param error Output error parameter, populated if there was an error deleting
+ the account (likely from the filesystem operations).
+ @return YES if the deletion was successful, NO otherwise.  Note: If no persisted account matching
+ the user parameter is found, no action will be taken, and deletion will be reported as successful.
+ */
+- (BOOL)deleteAccountForUser:(nonnull SFUserAccount *)user error:(NSError * _Nonnull * _Nonnull)error;
+
+@end
+
 NS_ASSUME_NONNULL_BEGIN
 @interface SFUserAccountManager ()<SFOAuthCoordinatorDelegate, SFIdentityCoordinatorDelegate, SFSDKLoginHostDelegate, SFSDKUserSelectionViewDelegate, SFSDKLoginFlowSelectionViewDelegate, SFLoginViewControllerDelegate>
 {
@@ -66,25 +94,54 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @property (nonatomic, strong, nonnull) SFSDKAuthPreferences *authPreferences;
 
+/** Non-deprecated internal accessor for the same backing storage as the public
+ `idpEnabled` property (deprecated in 14.0, removed in 15.0). Internal SDK code
+ reads the flag through this accessor so that its own use does not trip
+ -Wdeprecated-declarations. Delete this alongside the public property in 15.0.
+ */
+@property (nonatomic, readonly, assign) BOOL sdk_idpEnabled;
+
+/** Non-deprecated internal accessor for the same backing storage as the public
+ `idpAppURIScheme` property (deprecated in 14.0, removed in 15.0). Internal SDK code
+ reads the value through this accessor so that its own use does not trip
+ -Wdeprecated-declarations. Delete this alongside the public property in 15.0.
+ */
+@property (nonatomic, readonly, copy, nullable) NSString *sdk_idpAppURIScheme;
+
 /** SFSDKAlertView used to wrap display of SFSDKMessage using an AlertController.
  *
  */
 @property (nonatomic, strong, nullable) SFSDKAlertView *alertView;
+
+@property (nonatomic, copy, nonnull) void (^alertDisplayBlock)(SFSDKAlertMessage *, SFSDKWindowContainer *);
 
 /** SFSDKAlertView used to wrap display of SFSDKMessage using an AlertController.
  *
  */
 @property (nonatomic, strong, nullable) SFSDKAuthErrorManager *errorManager;
 
-/** SFSDKAlertView used to wrap display of SFSDKMessage using an AlertController.
- *
- */
-@property (nonatomic, strong, nullable) SFSDKAuthSession *authSession;
+@property (nonatomic, strong, nonnull) SFSDKSafeMutableDictionary<NSString *, SFSDKAuthSession *> *authSessions;
 
 /**
  Indicates if the app is configured to require browser based authentication.
  */
 @property (nonatomic, assign) BOOL useBrowserAuth;
+
+/**
+Set this block to handle presentation of the Authentication View Controller.
+*/
+@property (nonatomic, strong) SFSDKAuthViewHandler *authViewHandler;
+
+/**
+ Indicates if the app is configured for native login authentication.
+ */
+@property (nonatomic, assign) BOOL nativeLoginEnabled;
+
+/**
+ The previous login host, captured before a user-initiated host change. Used to
+ recover the active login host when the current host fails to connect.
+ */
+@property (nonatomic, copy, nullable) NSString *previousLoginHost;
 
 - (void)setCurrentUserInternal:(SFUserAccount* _Nullable)user;
 
@@ -124,6 +181,21 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (nullable id<SFUserAccountPersister>)accountPersister;
 
+/** Invoke this method to apply the specified credentials to the
+ a user whose credentials match. If no user exists, a new one is created. Fire notifications.
+ This will post user update notification.
+ @param credentials The credentials to apply
+ */
+- (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials;
+
+/** Invoke this method to apply the specified credentials to the
+ a user whose credentials match. If no user exists, a new one is created. Fire notifications.
+ This will post user update notification.
+ @param credentials The credentials to apply
+ @param identityData The identityData to apply
+ */
+- (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials withIdData:(nullable SFIdentityData *) identityData;
+
 /**
  * @param userIdentity to use for encoding to String
  * @return NSString userid:orgid
@@ -136,15 +208,38 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (SFUserAccountIdentity *_Nullable)decodeUserIdentity:(NSString *_Nullable)userIdentityEncoded;
 
-- (BOOL)handleAdvancedAuthURL:(NSURL *)advancedAuthURL;
-
-- (void)restartAuthentication;
+- (BOOL)handleAdvancedAuthURL:(NSURL *)advancedAuthURL options:(nullable NSDictionary *)options;
 
 - (BOOL)authenticateUsingIDP:(SFSDKAuthRequest *)request completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock;
 
-- (BOOL)authenticateWithRequest:(SFSDKAuthRequest *)request completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock;
+- (BOOL)authenticateWithRequest:(SFSDKAuthRequest *)request
+                      loginHint:(nullable NSString *)loginHint
+                     completion:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                        failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock
+             frontDoorBridgeUrl:(nullable NSURL * )frontDoorBridgeUrl
+                   codeVerifier:(nullable NSString *)codeVerifier;
 
 - (SFSDKAuthRequest *)defaultAuthRequest;
+
+
+- (BOOL)loginWithCompletion:(nullable SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(nullable SFUserAccountManagerFailureCallbackBlock)failureBlock
+                      scene:(nullable UIScene *)scene;
+
+- (BOOL)loginWithCompletion:(nullable SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(nullable SFUserAccountManagerFailureCallbackBlock)failureBlock
+                      scene:(UIScene *)scene
+                  loginHint:(nullable NSString *)loginHint
+                  loginHost:(nullable NSString *)loginHost
+         frontDoorBridgeUrl:(nullable NSURL * )frontDoorBridgeUrl
+               codeVerifier:(nullable NSString *)codeVerifier;
+
+- (SFSDKAuthRequest *)migrateRefreshAuthRequest:(SFSDKAppConfig *)newAppConfig;
+
+- (void)restartAuthenticationForViewController:(SFLoginViewController *)loginViewController;
+
+- (void)restartAuthenticationForViewController:(SFLoginViewController *)loginViewController recreateAuthRequest:(BOOL)recreateAuthRequest;
+
 
 @end
 

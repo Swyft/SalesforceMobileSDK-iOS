@@ -22,8 +22,8 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #import <SalesforceSDKCommon/SFJsonUtils.h>
-#import <SalesforceSDKCore/SFSDKCompositeResponse.h>
 #import "MobileSync.h"
 #import "SFSyncTarget+Internal.h"
 #import "SFSyncUpTarget+Internal.h"
@@ -89,29 +89,32 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
 #pragma mark - SFAdvancedSyncUpTarget methods
 
 - (void)syncUpRecords:(nonnull SFMobileSyncSyncManager *)syncManager records:(nonnull NSArray<NSMutableDictionary *> *)records fieldlist:(nonnull NSArray *)fieldlist mergeMode:(SFSyncStateMergeMode)mergeMode syncSoupName:(nonnull NSString *)syncSoupName completionBlock:(nonnull SFSyncUpTargetCompleteBlock)completionBlock failBlock:(nonnull SFSyncUpTargetErrorBlock)failBlock {
+    [self syncUpRecords:syncManager records:records fieldlist:fieldlist mergeMode:mergeMode syncSoupName:syncSoupName isReRun:NO completionBlock:completionBlock failBlock:failBlock];
+}
+
+- (void)syncUpRecords:(nonnull SFMobileSyncSyncManager *)syncManager records:(nonnull NSArray<NSMutableDictionary *> *)records fieldlist:(nonnull NSArray *)fieldlist mergeMode:(SFSyncStateMergeMode)mergeMode syncSoupName:(nonnull NSString *)syncSoupName isReRun:(BOOL)isReRun completionBlock:(nonnull SFSyncUpTargetCompleteBlock)completionBlock failBlock:(nonnull SFSyncUpTargetErrorBlock)failBlock {
     
     if (records.count == 0) {
         completionBlock(nil);
         return;
     }
     
-    NSMutableArray<NSString *> *refIds = [NSMutableArray new];
-    NSMutableArray<SFRestRequest *> *requests = [NSMutableArray new];
+    NSMutableArray<SFSDKRecordRequest *> *requests = [NSMutableArray new];
 
     // Preparing requests
     for (NSMutableDictionary* record in records) {
         NSString *refId;
         if (record[self.idFieldName] == nil || [record[self.idFieldName] isEqual:[NSNull null]]) {
             // create local id - needed for refId
-            refId = record[self.idFieldName] = [self createLocalId:record];
+            refId = record[self.idFieldName] = [SFSyncTarget createLocalId];
         } else {
             refId = record[self.idFieldName];
         }
         
-        SFRestRequest *request = [self buildRequestForRecord:record fieldlist:fieldlist];
+        SFSDKRecordRequest *request = [self buildRequestForRecord:record fieldlist:fieldlist];
         
         if (request) {
-            [refIds addObject:refId];
+            request.referenceId = refId;
             [requests addObject:request];
         }
     }
@@ -122,7 +125,7 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
         __strong typeof(weakSelf) strongSelf = weakSelf;
         
         // Build refId to server id
-        NSDictionary *refIdToServerId = [SFCompositeRequestHelper parseIdsFromResponses:[refIdToResponses allValues]];
+        NSDictionary *refIdToServerId = [SFCompositeRequestHelper parseIdsFromResponses:refIdToResponses];
         
         // Will a re-run be required?
         BOOL needReRun = NO;
@@ -135,17 +138,19 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
                                                                        record:record
                                                                     mergeMode:mergeMode
                                                               refIdToServerId:refIdToServerId
-                                                                     response:refIdToResponses[record[strongSelf.idFieldName]]];
+                                                                     response:refIdToResponses[record[strongSelf.idFieldName]]
+                                                                      isReRun:isReRun];
             }
         }
         
         // Re-run if required
-        if (needReRun) {
+        if (needReRun && !isReRun) {
             [strongSelf syncUpRecords:syncManager
                               records:records
                             fieldlist:fieldlist
                             mergeMode:mergeMode
                          syncSoupName:syncSoupName
+                              isReRun:YES
                       completionBlock:completionBlock
                             failBlock:failBlock];
         } else {
@@ -154,17 +159,27 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
         }
     };
         
-    [SFCompositeRequestHelper sendCompositeRequest:syncManager
-                                         allOrNone:NO
-                                            refIds:refIds
-                                          requests:requests
-                                   completionBlock:sendCompositeRequestCompleteBlock
-                                         failBlock:failBlock];
+    [self sendRecordRequests:syncManager
+              recordRequests:requests
+                  onComplete:sendCompositeRequestCompleteBlock
+                      onFail:failBlock];
+}
+- (void) sendRecordRequests:(nonnull SFMobileSyncSyncManager *)syncManager
+             recordRequests:(nonnull NSArray<SFSDKRecordRequest *> *)requests
+                 onComplete:(nonnull SFSendCompositeRequestCompleteBlock)sendCompleteBlock
+                     onFail:(nonnull SFSyncUpTargetErrorBlock)failBlock {
+    
+    [SFCompositeRequestHelper sendAsCompositeBatchRequest:syncManager
+                                                allOrNone:NO
+                                           recordRequests:requests
+                                               onComplete:sendCompleteBlock
+                                                   onFail:failBlock];
+    
 }
 
 #pragma mark - helper methods
 
-- (SFRestRequest*) buildRequestForRecord:(nonnull NSDictionary*)record fieldlist:(nonnull NSArray *)fieldlist {
+- (SFSDKRecordRequest*) buildRequestForRecord:(nonnull NSDictionary*)record fieldlist:(nonnull NSArray *)fieldlist {
     if (![self isDirty:record]) {
         return nil; // nothing to do
     }
@@ -180,7 +195,7 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
         if (isCreate) {
             return nil; // no need to go to server
         } else {
-            return [[SFRestAPI sharedInstance] requestForDeleteWithObjectType:objectType objectId:objectId apiVersion:nil];
+            return [SFSDKRecordRequest requestForDeleteWithObjectType:objectType objectId:objectId];
         }
     }
     // Create/update cases
@@ -194,39 +209,36 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
             if (externalId
                 // the following check is there for the case
                 // where the the external id field is the id field
-                // and the empty id field was populated by BatchSyncUpTarget using createLocalId()
-                && ![externalId isEqualToString:[self createLocalId:record]]) {
-                return [[SFRestAPI sharedInstance] requestForUpsertWithObjectType:objectType externalIdField:self.externalIdFieldName externalId:externalId fields:fields apiVersion:nil];
+                // and the field is populated by a local id
+                && ![SFSyncTarget isLocalId:externalId]) {
+                return [SFSDKRecordRequest requestForUpsertWithObjectType:objectType externalIdFieldName:self.externalIdFieldName externalId:externalId fields:fields];
             } else {
-                return [[SFRestAPI sharedInstance] requestForCreateWithObjectType:objectType fields:fields apiVersion:nil];
+                return [SFSDKRecordRequest requestForCreateWithObjectType:objectType fields:fields];
             }
         }
         else {
             fieldlist = self.updateFieldlist ? self.updateFieldlist : fieldlist;
             fields = [self buildFieldsMap:record fieldlist:fieldlist idFieldName:self.idFieldName modificationDateFieldName:self.modificationDateFieldName];
-            return [[SFRestAPI sharedInstance] requestForUpdateWithObjectType:objectType objectId:objectId fields:fields apiVersion:nil];
+            return [SFSDKRecordRequest requestForUpdateWithObjectType:objectType objectId:objectId fields:fields];
         }
     }
 }
 
-- (BOOL) updateRecordInLocalStore:(nonnull SFMobileSyncSyncManager *)syncManager soupName:(nonnull NSString *)soupName record:(nonnull NSMutableDictionary *)record mergeMode:(SFSyncStateMergeMode)mergeMode refIdToServerId:(NSDictionary*)refIdToServerId response:(SFSDKCompositeSubResponse*)response {
+- (BOOL) updateRecordInLocalStore:(nonnull SFMobileSyncSyncManager *)syncManager soupName:(nonnull NSString *)soupName record:(nonnull NSMutableDictionary *)record mergeMode:(SFSyncStateMergeMode)mergeMode refIdToServerId:(NSDictionary*)refIdToServerId response:(SFSDKRecordResponse*)response isReRun:(BOOL)isReRun {
 
     BOOL needReRun = NO;
-    NSUInteger statusCode = response.httpStatusCode;
-    BOOL successStatusCode = [SFRestAPI isStatusCodeSuccess:statusCode];
-    BOOL notFoundStatusCode = [SFRestAPI isStatusCodeNotFound:statusCode];
+    NSString *lastError = [SFJsonUtils JSONRepresentation:response.errorJson];
     
     // Delete case
     if ([self isLocallyDeleted:record]) {
         if ([self isLocallyCreated:record]  // we didn't go to the sever
-            || successStatusCode  // or we successfully deleted on the server
-            || notFoundStatusCode) // or the record was already deleted on the server
+            || response.success  // or we successfully deleted on the server
+            || response.recordDoesNotExist) // or the record was already deleted on the server
         {
             [self deleteFromLocalStore:syncManager soupName:soupName record:record];
         }
         // Failure
         else {
-            NSString *lastError = [SFJsonUtils JSONRepresentation:response.body];
             [self saveRecordToLocalStoreWithLastError:syncManager soupName:soupName record:record lastError:lastError];
         }
     }
@@ -234,26 +246,24 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
     // Create / update case
     else {
         // Success case
-        if (successStatusCode)
+        if (response.success)
         {
             // Plugging server id in id field
-            [SFCompositeRequestHelper updateReferences:record fieldWithRefId:self.idFieldName refIdToServerId:refIdToServerId];
+            NSDictionary* updatedRecord = [SFCompositeRequestHelper updateReferences:record fieldWithRefId:self.idFieldName refIdToServerId:refIdToServerId];
             
             // Clean and save
-            [self cleanAndSaveInLocalStore:syncManager soupName:soupName record:record];
+            [self cleanAndSaveInLocalStore:syncManager soupName:soupName record:updatedRecord];
         }
         // Handling remotely deleted records
-        else if (notFoundStatusCode) {
-            // Record needs to be recreated
-            if (mergeMode == SFSyncStateMergeModeOverwrite) {
-                record[kSyncTargetLocal] = @YES;
-                record[kSyncTargetLocallyCreated] = @YES;
-                needReRun = YES;
-            }
+        else if (response.recordDoesNotExist
+                 && mergeMode == SFSyncStateMergeModeOverwrite // Record needs to be recreated
+                 && !isReRun) {
+            record[kSyncTargetLocal] = @YES;
+            record[kSyncTargetLocallyCreated] = @YES;
+            needReRun = YES;
         }
         // Failure
         else {
-            NSString *lastError = [SFJsonUtils JSONRepresentation:response.body];
             [self saveRecordToLocalStoreWithLastError:syncManager soupName:soupName record:record lastError:lastError];
         }
         
@@ -262,14 +272,14 @@ static NSUInteger const kSFMaxSubRequestsCompositeAPI = 25;
     return needReRun;    
 }
 
-- (NSString*) createLocalId:(NSDictionary*)record {
-    return [NSString stringWithFormat:@"local_%@", record[SOUP_ENTRY_ID]];
+- (NSUInteger) computeMaxBatchSize:(NSNumber*)maxBatchSize {
+    return (maxBatchSize == nil || [maxBatchSize unsignedIntegerValue] > [self maxAPIBatchSize])
+        ? [self maxAPIBatchSize]
+        : [maxBatchSize unsignedIntegerValue];
 }
 
-- (NSUInteger) computeMaxBatchSize:(NSNumber*)maxBatchSize {
-    return (maxBatchSize == nil || [maxBatchSize unsignedIntegerValue] > kSFMaxSubRequestsCompositeAPI)
-        ? kSFMaxSubRequestsCompositeAPI
-        : [maxBatchSize unsignedIntegerValue];
+- (NSUInteger) maxAPIBatchSize {
+    return kSFMaxSubRequestsCompositeAPI;
 }
 
 @end

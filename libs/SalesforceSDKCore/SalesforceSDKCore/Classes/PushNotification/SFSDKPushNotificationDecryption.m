@@ -23,6 +23,7 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
 */
 
 #import <SalesforceSDKCore/SFSDKCryptoUtils.h>
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 #import <SalesforceSDKCommon/SFJsonUtils.h>
 #import "SFSDKPushNotificationDecryption.h"
 #import "SFSDKPushNotificationDecryption+Internal.h"
@@ -176,6 +177,7 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
         }
         return nil;
     }
+    
     SecKeyRef privateKeyRef = [SFSDKCryptoUtils getRSAPrivateKeyRefWithName:kPNEncryptionKeyName keyLength:kPNEncryptionKeyLength];
     if (privateKeyRef == nil) {
         if (error) {
@@ -183,9 +185,19 @@ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH 
         }
         return nil;
     }
-    NSData *decryptedData = [SFSDKCryptoUtils decryptUsingRSAforData:secretData withKeyRef:privateKeyRef];
+    
+    NSError *oaepDecryptionError;
+    NSData *decryptedData = [SFSDKCryptoUtils decryptData:secretData key:privateKeyRef algorithm:kSecKeyAlgorithmRSAEncryptionOAEPSHA256 error:&oaepDecryptionError];
     CFRelease(privateKeyRef);
-    if (decryptedData == nil) {
+    if (oaepDecryptionError) {
+        [SFSDKCoreLogger e:[self class] format:@"Decrypting secret with RSA OAEP failed: %@", oaepDecryptionError.localizedDescription];
+        if (error) {
+            *error = oaepDecryptionError;
+        }
+        return nil;
+    }
+
+    if (decryptedData == nil || [decryptedData length] != 32) {
         if (error) {
             *error = [self pushErrorWithCode:SFSDKPushNotificationErrorSecretDecryptionFailed description:@"Failed to decrypt secret with RSA private key."];
         }

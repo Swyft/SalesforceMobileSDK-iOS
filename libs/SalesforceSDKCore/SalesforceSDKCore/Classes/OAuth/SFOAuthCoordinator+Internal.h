@@ -22,9 +22,9 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#import "SFOAuthCoordinator.h"
 #import "SFSDKAuthSession.h"
-@class SFOAuthInfo;
+#import "SalesforceSDKCore/SalesforceSDKCore.h"
+#import "SalesforceSDKCore/SalesforceSDKCore-Swift.h"
 
 typedef NS_ENUM(NSUInteger, SFOAuthTokenEndpointFlow) {
     SFOAuthTokenEndpointFlowNone = 0,
@@ -39,14 +39,28 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly, nullable) NSURLSession *session;
 @property (nonatomic, strong , nullable) NSMutableData *responseData;
 @property (nonatomic, assign) BOOL initialRequestLoaded;
+@property (nonatomic, assign) BOOL domainUpdated;
 @property (nonatomic, copy) NSString *approvalCode;
 @property (nonatomic, strong, nullable) WKWebView *view;
 @property (nonatomic, strong, nullable) NSString *codeVerifier;
-@property (nonatomic, strong, nullable) SFOAuthInfo *authInfo;
-@property (nonatomic, readwrite) SFOAuthAdvancedAuthState advancedAuthState;
+@property (nonatomic, strong, nonnull) SFOAuthInfo *authInfo;
 @property (nonatomic, copy) NSString *origWebUserAgent;
 @property (nonatomic, strong ,nullable) SFOAuthCredentials *spAppCredentials;
 @property (nonatomic, weak, nullable) SFSDKAuthSession *authSession;
+
+@property (nonatomic, strong, nullable) SFSDKAuthCoordinatorFrontdoorBridgeLoginOverride *frontdoorBridgeLoginOverride;
+
+@property (nonatomic, strong, nullable) NSString *loginHint;
+
+/**
+ Per-call override for whether `/authorize` should request a DPoP-bound authorization
+ code (`dpop_jkt`). `nil` means "defer to the process-wide `SalesforceSDKManager.useDPoP`
+ flag" — this is the normal-login default and must not be set for that path. A non-nil
+ value (e.g. set by a refresh-token migration) takes precedence over the global flag,
+ letting a single call opt in or out of DPoP binding independent of the app's default
+ posture for brand-new logins.
+ */
+@property (nonatomic, strong, nullable) NSNumber *dpopOverride;
 
 - (instancetype)initWithAuthSession:(SFSDKAuthSession *)authSession;
 
@@ -71,7 +85,33 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (NSString *)generateApprovalUrlString;
 
-- (void)beginUserAgentFlow;
+/**
+ * Used for testing only.
+ * @return The authorize url for the native browser (advanced auth) path, including
+ *         `state`/`prompt`/`auth_trigger`/`sdkInfo` params.
+ */
+- (NSString *)nativeBrowserApprovalUrlWithSharedBrowserSessionEnabled:(BOOL)shareBrowserSession;
+
+- (void)beginWebViewFlow;
+
+/**
+ * Returns the scope query parameter string for OAuth requests.
+ * @return A properly formatted scope parameter string, or empty string if no scopes provided.
+ */
+- (NSString *)scopeQueryParamString:(NSArray<NSString*>*)scopes;
+
+/**
+ Migrates the refresh token for a user to a new app configuration.
+ */
+- (void)migrateRefreshToken:(SFUserAccount *)user;
+
+/**
+ Builds the options dictionary handed to the URL handler on the advanced-auth browser callback.
+ Guards against a nil sceneId so nil is never inserted into the dictionary.
+ @param sceneId The auth session's scene id, or nil if no scene was connected / the session deallocated.
+ @return A dictionary keyed by kSFIDPSceneIdKey when sceneId is non-nil, or an empty dictionary otherwise.
+ */
+- (NSDictionary *)browserCallbackOptionsForSceneId:(nullable NSString *)sceneId;
 
 @end
 

@@ -75,7 +75,9 @@ static CGFloat kHorizontalSpace = 12;
 {
     UIImage *logotmp = [[SFSDKResourceUtils imageNamed:@"salesforce-logo"]  imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
     
+    SFSDK_USE_DEPRECATED_BEGIN
     UIImage *logo  = [SFSDKUserSelectionTableViewController  resizeImage:logotmp resizeSize:CGSizeMake(150,120)];
+    SFSDK_USE_DEPRECATED_END
     self.logoView = [[UIImageView alloc]initWithImage:logo];
     self.logoView.contentMode = UIViewContentModeScaleToFill;
     self.backgroundColor = [UIColor salesforceSystemBackgroundColor];
@@ -83,9 +85,9 @@ static CGFloat kHorizontalSpace = 12;
     self.appNameLabel = [[UILabel alloc] init];
     self.descriptionLabel.text = [SFSDKResourceUtils localizedString:@"idpSelectUserLabel"];
     self.appNameLabel.text = self.appName;
-    self.descriptionLabel.font = [UIFont textRegular:16.0];
+    self.descriptionLabel.font = [UIFont sfsdk_textRegular:16.0];
     self.descriptionLabel.textColor = [UIColor salesforceAltTextColor];
-    self.appNameLabel.font = [UIFont textRegular:16.0];
+    self.appNameLabel.font = [UIFont sfsdk_textRegular:16.0];
     self.appNameLabel.textColor = [UIColor salesforceAltTextColor];
     [self.superview addSubview:self.logoView];
     [self.superview addSubview:self.descriptionLabel];
@@ -112,12 +114,14 @@ static CGFloat kHorizontalSpace = 12;
     [super layoutSubviews];
     self.backgroundColor = [UIColor salesforceSystemBackgroundColor];
     UIImage *addAccountImageTmp = [[SFSDKResourceUtils imageNamed:@"account-add"]  imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    SFSDK_USE_DEPRECATED_BEGIN
     UIImage *addAccountImage  = [SFSDKUserSelectionTableViewController  resizeImage:addAccountImageTmp resizeSize:CGSizeMake(18,18)];
+    SFSDK_USE_DEPRECATED_END
     self.addButton = [UIButton buttonWithType:UIButtonTypeCustom];
     [self.addButton setBackgroundImage:addAccountImage forState:UIControlStateNormal];
     self.descriptionLabel = [[UILabel alloc] init];
     self.descriptionLabel.text = [SFSDKResourceUtils localizedString:@"idpAddNewAccountLabel"];
-    self.descriptionLabel.font = [UIFont textRegular:16];
+    self.descriptionLabel.font = [UIFont sfsdk_textRegular:16];
     self.descriptionLabel.textColor = [UIColor salesforceDefaultTextColor];
     self.addButton.translatesAutoresizingMaskIntoConstraints = NO;
     self.descriptionLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -136,6 +140,8 @@ static CGFloat kHorizontalSpace = 12;
 }
 @end
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 @implementation SFSDKUserSelectionTableViewController
 @synthesize spAppOptions;
 @synthesize listViewDelegate;
@@ -224,6 +230,13 @@ static CGFloat kHorizontalSpace = 12;
     if (userAccount.photo) {
         cell.profileImage = userAccount.photo;
     }
+    
+    // Dont't allow these users to be selected.  
+    if (userAccount.idData.nativeLogin) {
+        cell.userInteractionEnabled = NO;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    }
+ 
     return cell;
 }
 
@@ -303,3 +316,4 @@ static CGFloat kHorizontalSpace = 12;
 }
 
 @end
+#pragma clang diagnostic pop

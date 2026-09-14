@@ -37,7 +37,34 @@ typedef NS_ENUM(NSUInteger, SFSmartStoreFtsExtension) {
 // Buffer size when reading/writing bytes in memory
 static NSUInteger kBufferSize = 4096;
 
+// Columns of a soup fts table
+static NSString *const ROWID_COL = @"rowid";
+static NSString *const PATH_COL = @"path";
+
+// Columns of the soup index map table
+static NSString *const SOUP_NAME_COL = @"soupName";
+static NSString *const COLUMN_TYPE_COL = @"columnType";
+
+// Table to keep track of soup attributes
+static NSString *const SOUP_ATTRS_TABLE = @"soup_attrs";
+
+// Table to keep track of soup's index specs
+static NSString *const SOUP_INDEX_MAP_TABLE = @"soup_index_map";
+
+// Columns of long operations status table
+static NSString *const TYPE_COL = @"type";
+static NSString *const DETAILS_COL = @"details";
+static NSString *const STATUS_COL = @"status";
+
+// Table to keep track of status of long operations in flight
+static NSString *const LONG_OPERATIONS_STATUS_TABLE = @"long_operations_status";
+
+// Explain support
+static NSString *const EXPLAIN_ROWS = @"rows";
+
 @interface SFSmartStore ()
+
++ (NSString *)licenseKey;
 
 @property (nonatomic, strong) FMDatabaseQueue *storeQueue;
 @property (nonatomic, strong) SFSmartStoreDatabaseManager *dbMgr;
@@ -59,14 +86,6 @@ static NSUInteger kBufferSize = 4096;
 - (BOOL)createMetaTables;
 
 /**
- Returns the features currently registered.
- @see SFSoupSpec for a list of features.
- @param db This method is expected to be called from [fmdbqueue inDatabase:^(){ ... }]
- @return array with registered soup features, if none, an empty array.
- */
-- (NSArray *)registeredSoupFeaturesWithDb:(FMDatabase*)db;
-
-/**
  Create long operations status table (LONG_OPERATIONS_STATUS_TABLE)
  @return YES if we were able to create the table, NO otherwise.
  */
@@ -74,70 +93,19 @@ static NSUInteger kBufferSize = 4096;
 
 /**
  Register the soup
- @param soupSpec The soup specs of the soup to register
+ @param soupName The name of the soup to register
  @param indexSpecs Array of one ore more IndexSpec objects as dictionaries
  @param soupTableName The name of the table to use for the soup
  @param db This method is expected to be called from [fmdbqueue inDatabase:^(){ ... }]
  */
-- (void)registerSoupWithSpec:(SFSoupSpec*)soupSpec withIndexSpecs:(NSArray*)indexSpecs withSoupTableName:(NSString*) soupTableName withDb:(FMDatabase*) db;
+- (void)registerSoupWithName:(NSString*)soupName withIndexSpecs:(NSArray*)indexSpecs withSoupTableName:(NSString*) soupTableName withDb:(FMDatabase*) db;
 
-/**
- @return the root directory where external blobs are stored.
- */
-- (NSString *)externalStorageRootDirectory;
-
-/**
- @param soupTableName the soup table name
- @return the directory in which external blobs are stored for a soup (based on table name).
- */
-
-- (NSString *)externalStorageSoupDirectory:(NSString *)soupTableName;
-
-/**
- @param soupEntryId the soup entry id
- @param soupTableName the soup table name
- @return the file path where external blobs of a soup entry is stored.
- */
-- (NSString *)externalStorageSoupFilePath:(NSNumber *)soupEntryId
-                            soupTableName:(NSString *)soupTableName;
-
-/**
- @param soupEntry     the soup entry to save to a external file
- @param soupEntryId   the soup entry id
- @param soupTableName the soup table name
- @return YES if file was saved successfully.
- */
-- (BOOL)saveSoupEntryExternally:(NSDictionary *)soupEntry
-                    soupEntryId:(NSNumber *)soupEntryId
-                  soupTableName:(NSString *)soupTableName;
-
-/**
- @param soupEntryId   the soup entry id
- @param soupTableName the soup table name
- @return a soup entry if file was loaded successfully.
- */
-- (id)loadExternalSoupEntry:(NSNumber *)soupEntryId
-              soupTableName:(NSString *)soupTableName;
-
-/**
- @param soupTableName the soup table name
- @param deleteDir whether or not should delete directory as well
- */
-- (void)deleteAllExternalEntries:(NSString *)soupTableName
-                       deleteDir:(BOOL)deleteDir;
 
 /**
  @param db This method is expected to be called from [fmdbqueue inDatabase:^(){ ... }]
  @return The soup table name from SOUP_ATTRS_TABLE, based on soup name.
  */
 - (NSString *)tableNameForSoup:(NSString*)soupName withDb:(FMDatabase*) db;
-
-/**
- @param soupName the name of the soup
- @param db Database.
- @return SFSoupSpec for the given soup name
- */
-- (SFSoupSpec*)attributesForSoup:(NSString*)soupName withDb:(FMDatabase *)db;
 
 /**
  @param soupName the name of the soup
@@ -195,10 +163,21 @@ static NSUInteger kBufferSize = 4096;
 
 
 /**
+ @param path Path of interest
+ @param soupName name of the soup
  @param db This method is expected to be called from [fmdbqueue inDatabase:^(){ ... }]
- @return The map of an indexSpec path to a column name from SOUP_INDEX_MAP_TABLE.
+ @return The column name for the given path if indexed or nil otherwise.
  */
 - (NSString *)columnNameForPath:(NSString *)path inSoup:(NSString *)soupName withDb:(FMDatabase*)db;
+
+
+/**
+ @param path Path of interest
+ @param soupName name of the soup
+ @param db This method is expected to be called from [fmdbqueue inDatabase:^(){ ... }]
+ @return YES if the given path is indexed or NO otherwise.
+ */
+- (BOOL) hasIndexForPath:(NSString*)path inSoup:(NSString*)soupName withDb:(FMDatabase*) db;
 
 /**
  Similar to System.currentTimeMillis: time in ms since Jan 1 1970

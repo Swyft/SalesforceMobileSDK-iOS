@@ -43,7 +43,6 @@ static NSString * const kManagedKeyConnectedAppCallbackUri    = @"ManagedAppCall
 static NSString * const kManagedKeyClearClipboardOnBackground = @"ClearClipboardOnBackground";
 static NSString * const kManagedKeyOnlyShowAuthorizedHosts    = @"OnlyShowAuthorizedHosts";
 static NSString * const kManagedKeyIDPAppURLScheme = @"IDPAppURLScheme";
-static NSString * const kSFAppFeatureManagedByMDM   = @"MM";
 static NSString * const kSFDisableExternalPaste = @"DISABLE_EXTERNAL_PASTE";
 
 @interface SFManagedPreferences ()
@@ -93,7 +92,7 @@ static NSString * const kSFDisableExternalPaste = @"DISABLE_EXTERNAL_PASTE";
 }
 
 - (void)configurePreferences {
-    self.rawPreferences = [[NSUserDefaults msdkUserDefaults] dictionaryForKey:kManagedConfigurationKey];
+    self.rawPreferences = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kManagedConfigurationKey];
     if ([self hasManagedPreferences]) {
         [SFSDKAppFeatureMarkers registerAppFeature:kSFAppFeatureManagedByMDM];
     }
@@ -111,16 +110,22 @@ static NSString * const kSFDisableExternalPaste = @"DISABLE_EXTERNAL_PASTE";
     return [self.rawPreferences[kManagedKeyOnlyShowAuthorizedHosts] boolValue];
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (NSString *)idpAppURLScheme {
     return self.rawPreferences[kManagedKeyIDPAppURLScheme];
 }
+#pragma clang diagnostic pop
 
 - (NSArray *)loginHosts {
     id objLoginHosts = self.rawPreferences[kManagedKeyLoginHosts];
     if ([objLoginHosts isKindOfClass:[NSString class]]) {
         objLoginHosts = @[ objLoginHosts ];
     }
-    return objLoginHosts;
+    if ([objLoginHosts isKindOfClass:[NSArray class]] && [(NSArray *)objLoginHosts count] > 0) {
+        return objLoginHosts;
+    }
+    return nil;
 }
 
 - (NSArray *)loginHostLabels {
@@ -128,7 +133,10 @@ static NSString * const kSFDisableExternalPaste = @"DISABLE_EXTERNAL_PASTE";
     if ([objLoginHostLabels isKindOfClass:[NSString class]]) {
         objLoginHostLabels = @[ objLoginHostLabels ];
     }
-    return objLoginHostLabels;
+    if ([objLoginHostLabels isKindOfClass:[NSArray class]] && [(NSArray *)objLoginHostLabels count] > 0) {
+        return objLoginHostLabels;
+    }
+    return nil;
 }
 
 - (NSString *)connectedAppId {

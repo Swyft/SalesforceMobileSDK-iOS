@@ -120,7 +120,9 @@
     
     self.navBar.topItem.titleView = item;
     [self showSettingsIcon];
-    [self setNeedsStatusBarAppearanceUpdate];
+    #if !TARGET_OS_VISION
+        [self setNeedsStatusBarAppearanceUpdate];
+    #endif
 }
 
 + (UIImage*)imageWithImage:(UIImage*)image
@@ -223,7 +225,7 @@
     if (!navigationBar) {
         return;
     }
-    [SFSDKViewUtils styleNavigationBar:navigationBar config:[SFUserAccountManager sharedInstance].loginViewControllerConfig];
+    [SFSDKViewUtils styleNavigationBar:navigationBar config:[SFUserAccountManager sharedInstance].loginViewControllerConfig classes:@[[self.navigationController class]]];
 }
 
 - (void)showSettingsIcon {
@@ -234,7 +236,7 @@
         UIBarButtonItem *rightButton = [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain target:self action:@selector(showLoginHost:)];
         rightButton.accessibilityLabel = [SFSDKResourceUtils localizedString:@"LOGIN_CHOOSE_SERVER"];
         self.navBar.topItem.rightBarButtonItem = rightButton;
-        self.navBar.topItem.rightBarButtonItem.tintColor = [UIColor  whiteColor];
+        self.navBar.topItem.rightBarButtonItem.tintColor = [UIColor salesforceNavBarTintColor];
     }
     
 }

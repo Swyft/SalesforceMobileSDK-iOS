@@ -72,14 +72,4 @@ class SmartStoreTests: XCTestCase {
         case .failure(_): XCTFail("query should not have failed")
         }
     }
-
-    func testBadQuery() {
-        _ = store!.registerSoup(withName: "MyTestSoup", withIndexPaths: ["key", "owner"])
-        let result = store!.query("select {MyTestSoup:date} from {MyTestSoup}")
-        switch (result) {
-        case .success(_): XCTFail("query should have failed")
-        case .failure(let error): XCTAssertNotNil(error)
-        }
-    }
-
 }

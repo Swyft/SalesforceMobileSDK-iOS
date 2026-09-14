@@ -28,13 +28,29 @@
 #import "SFSDKLogoutBlocker.h"
 #import "SFSDKAuthViewHandler.h"
 #import "SFUserAccountManager+Internal.h"
+#import "SFUserAccount+Internal.h"
 #import "SFDefaultUserAccountPersister.h"
 #import "SFOAuthCredentials+Internal.h"
 #import "TestSetupUtils.h"
 #import "SFSDKAuthRequest.h"
+#import "SFUserAccountConstants.h"
 #import "SFOAuthCoordinator+Internal.h"
+#import "SFSDKLoginHostListViewController.h"
+#import "SFSDKNavigationController.h"
+#import "SFLoginViewController.h"
+#import <Security/Security.h>
 static NSString * const kUserIdFormatString = @"005R0000000Dsl%lu";
 static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
+
+@interface SFUserAccountManager ()
+
+- (void)notifyLoginCompletion:(SFUserAccount *)userAccount authInfo:(SFOAuthInfo *)authInfo;
+
+// Private helper exercised directly below. -presentLoginView: consults this to decide whether a
+// login screen is already on the auth window and must be dismissed before presenting new login UI.
+- (BOOL)isAlreadyPresentingLoginController:(UIViewController *)presentedViewController;
+
+@end
 
 @interface TestUserAccountManagerDelegate : NSObject <SFUserAccountManagerDelegate>
 
@@ -83,6 +99,36 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
 
 @end
 
+/** Auth client stub that captures the credentials passed to revokeRefreshToken:, so tests can
+ assert which user's refresh token gets revoked. By default it only captures -- it does NOT
+ clear any fields on the credentials, unlike the real SFSDKOAuth2 implementation. Set
+ `mimicsProductionRevokeSideEffect` to YES to also call `-[SFOAuthCredentials revoke]`, matching
+ what the real auth client does synchronously (clears refreshToken, tokenType, etc.) -- needed by
+ tests that must exercise that side effect rather than be shielded from it. */
+@interface SFSDKRevokeCapturingOAuthClient : NSObject <SFSDKOAuthProtocol>
+
+@property (nonatomic, strong, nullable) SFOAuthCredentials *revokedCredentials;
+@property (nonatomic, assign) NSUInteger revokeCallCount;
+@property (nonatomic, assign) BOOL mimicsProductionRevokeSideEffect;
+
+@end
+
+@implementation SFSDKRevokeCapturingOAuthClient
+
+- (void)accessTokenForApprovalCode:(SFSDKOAuthTokenEndpointRequest *)endpointReq completion:(void (^)(SFSDKOAuthTokenEndpointResponse *))completionBlock {}
+- (void)accessTokenForRefresh:(SFSDKOAuthTokenEndpointRequest *)endpointReq completion:(void (^)(SFSDKOAuthTokenEndpointResponse *))completionBlock {}
+- (void)openIDTokenForRefresh:(SFSDKOAuthTokenEndpointRequest *)endpointReq completion:(void (^)(NSString *))completionBlock {}
+
+- (void)revokeRefreshToken:(SFOAuthCredentials *)credentials reason:(SFLogoutReason)reason {
+    self.revokedCredentials = credentials;
+    self.revokeCallCount += 1;
+    if (self.mimicsProductionRevokeSideEffect) {
+        [credentials revoke];
+    }
+}
+
+@end
+
 /** Unit tests for the SFUserAccountManager
  */
 @interface SFUserAccountManagerTests : XCTestCase
@@ -109,8 +155,8 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
 - (void)setUp {
     [super setUp];
     // Delete the content of the global library directory
-    NSString *globalLibraryDirectory = [[SFDirectoryManager sharedManager] directoryForUser:nil type:NSLibraryDirectory components:nil];
-    [[[NSFileManager alloc] init] removeItemAtPath:globalLibraryDirectory error:nil];
+    NSString *globalLibraryDirectory = [[SFDirectoryManager sharedManager] globalDirectoryOfType:NSLibraryDirectory components:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:globalLibraryDirectory error:nil];
     // Set the oauth client ID after deleting the content of the global library directory
     // to ensure the SFUserAccountManager sharedInstance loads from an empty directory
     self.uam = [SFUserAccountManager sharedInstance];
@@ -218,7 +264,7 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
     NSString *expectedLocation = [[SFDirectoryManager sharedManager] directoryForOrg:user.credentials.organizationId user:user.credentials.userId community:nil type:NSLibraryDirectory components:nil];
     expectedLocation = [expectedLocation stringByAppendingPathComponent:@"UserAccount.plist"];
     XCTAssertEqualObjects(expectedLocation, [SFDefaultUserAccountPersister userAccountPlistFileForUser:user], @"Mismatching user account paths");
-    NSFileManager *fm = [[NSFileManager alloc] init];
+    NSFileManager *fm = [NSFileManager defaultManager];
     XCTAssertTrue([fm fileExistsAtPath:expectedLocation], @"Unable to find new UserAccount.plist");
 
     NSString *userId = [NSString stringWithFormat:kUserIdFormatString, (unsigned long)0];
@@ -232,7 +278,7 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
 
     // Create 10 users
     [self createAndVerifyUserAccounts:10];
-    NSFileManager *fm = [[NSFileManager alloc] init];
+    NSFileManager *fm = [NSFileManager defaultManager];
 
     // Ensure all directories have been correctly created
     {
@@ -245,7 +291,7 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
         }
     }
     
-       // Remove and verify that allUserAccounts property implicitly loads the accounts from disk.
+    // Remove and verify that allUserAccounts property implicitly loads the accounts from disk.
     [self.uam clearAllAccountState];
     NSError *error =nil;
     [self.uam loadAccounts:&error];
@@ -307,6 +353,8 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
 }
 
 - (void)testLoginHostForSwitchToUser {
+    [SFUserAccountManager sharedInstance].nativeLoginEnabled = NO;
+    
     NSArray *accounts = [self createAndVerifyUserAccounts:2];
     SFUserAccount *origUser = accounts[0];
     self.uam.loginHost = @"my.prev.domain";
@@ -324,39 +372,6 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
     XCTAssertEqual(self.uam.currentUser, newUser, @"The current user should be set to the new user.");
     XCTAssertEqual(newUser.credentials.domain, testDomain, @"Switch user should not have changed users domain in credentials.");
     XCTAssertEqual(self.uam.loginHost, newUser.credentials.domain, @"Switch user should set current login host to users domain.");
-}
-
-- (void)testIdentityDataModification {
-    NSArray *accounts = [self createAndVerifyUserAccounts:1];
-    [[SFUserAccountManager sharedInstance] setCurrentUserInternal:accounts[0]];
-    SFIdentityData *idData = [self sampleIdentityData];
-    [self.uam applyIdData:idData forUser:self.uam.currentUser];
-    int origMobileAppPinLength = self.uam.currentUser.idData.mobileAppPinLength;
-    int origMobileAppScreenLockTimeout = self.uam.currentUser.idData.mobileAppScreenLockTimeout;
-    
-    // Verify selective custom settings updates do not interfere with other previous identity data.
-    NSDictionary *origCustomAttributes = self.uam.currentUser.idData.customAttributes;
-    NSDictionary *origCustomPermissions = self.uam.currentUser.idData.customPermissions;
-    NSMutableDictionary *mutableCustomAttributes = [origCustomAttributes mutableCopy];
-    NSMutableDictionary *mutableCustomPermissions = [origCustomPermissions mutableCopy];
-    mutableCustomAttributes[@"ANewCustomAttribute"] = @"ANewCustomAttributeValue";
-    mutableCustomPermissions[@"ANewCustomPermission"] = @"ANewCustomPermissionValue";
-    [self.uam applyIdDataCustomAttributes:mutableCustomAttributes forUser:self.uam.currentUser];
-    [self.uam applyIdDataCustomPermissions:mutableCustomPermissions forUser:self.uam.currentUser];
-    XCTAssertTrue([self.uam.currentUser.idData.customAttributes isEqualToDictionary:mutableCustomAttributes], @"Attributes dictionaries are not equal.");
-    XCTAssertFalse([self.uam.currentUser.idData.customAttributes isEqualToDictionary:origCustomAttributes], @"Attributes dictionaries should not be equal.");
-    XCTAssertTrue([self.uam.currentUser.idData.customPermissions isEqualToDictionary:mutableCustomPermissions], @"Permissions dictionaries are not equal.");
-    XCTAssertFalse([self.uam.currentUser.idData.customPermissions isEqualToDictionary:origCustomPermissions], @"Permissions dictionaries should not be equal.");
-    XCTAssertEqual(origMobileAppPinLength, self.uam.currentUser.idData.mobileAppPinLength, @"Mobile app pin length should not have changed.");
-    XCTAssertEqual(origMobileAppScreenLockTimeout, self.uam.currentUser.idData.mobileAppScreenLockTimeout, @"Mobile app screen lock timeout should not have changed.");
-    
-    // Verify that re-applying the whole of the identity data, overwrites changes.
-    idData = [self sampleIdentityData];
-    [self.uam applyIdData:idData forUser:self.uam.currentUser];
-    XCTAssertTrue([self.uam.currentUser.idData.customAttributes isEqualToDictionary:origCustomAttributes], @"Custom atttribute changes should have been overwritten with whole identity write.");
-    XCTAssertFalse([self.uam.currentUser.idData.customAttributes isEqualToDictionary:mutableCustomAttributes], @"Attributes dictionaries should not be equal.");
-    XCTAssertTrue([self.uam.currentUser.idData.customPermissions isEqualToDictionary:origCustomPermissions], @"Custom permission changes should have been overwritten with whole identity write.");
-    XCTAssertFalse([self.uam.currentUser.idData.customAttributes isEqualToDictionary:mutableCustomPermissions], @"Permissions dictionaries should not be equal.");
 }
 
 - (void)testUserAccountManagerPersistentProperties {
@@ -414,14 +429,16 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
          [refreshExpectation fulfill];
          user = userAccount;
      } failure:^(SFOAuthInfo *authInfo, NSError *error) {
+         XCTFail(@"refreshCredentials failed: %@", error.localizedDescription);
+         [refreshExpectation fulfill];
      }];
-   
+
     [self waitForExpectations:@[refreshExpectation] timeout:20];
     
 }
 
 - (void)testEntityId {
-    NSString *userId = @"ABCDE12345ABCDE".entityId18;
+    NSString *userId = @"ABCDE12345ABCDE".sfsdk_entityId18;
     SFUserAccountIdentity *identity = [[SFUserAccountIdentity alloc] initWithUserId:userId  orgId:@"ABCDE12345ABCDE"];
     XCTAssertNotNil(identity);
     XCTAssertTrue(userId.length == 18,@"EntityId18 should not be nil");
@@ -451,11 +468,46 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
     SFSDKAuthSession *session = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
     SFOAuthCoordinator *coordinator = [[SFOAuthCoordinator alloc] initWithAuthSession:session];
     coordinator.delegate = [SFUserAccountManager sharedInstance];
-    [coordinator beginUserAgentFlow];
+    [coordinator beginWebViewFlow];
 
     [self waitForExpectations:@[expectation] timeout:20];
-    
+
     [SFUserAccountManager sharedInstance].authViewHandler = origAuthViewHandler;
+}
+
+// -presentLoginView: consults -isAlreadyPresentingLoginController: to decide whether an existing
+// login screen must be dismissed before presenting new login UI. When a biometric-locked user
+// cancels/fails Face ID during an Advanced Auth flow, the retry re-enters -presentLoginView:. The
+// screen already on the auth window at that point is the biometric fallback picker -- an
+// SFSDKLoginHostListViewController wrapped in an SFSDKNavigationController (see
+// -presentLoginHostListViewControllerForBiometricFallback:). If -isAlreadyPresentingLoginController:
+// fails to recognize it, the picker is never dismissed: the advanced-auth branch swaps the auth
+// window's root view controller and starts the ASWebAuthenticationSession while the picker is still
+// presented on top, so the browser login never becomes visible and the user is stranded on the
+// picker. The host-list picker must be recognized just like SFLoginViewController.
+- (void)test_givenLoginHostListPickerPresented_whenCheckingIsAlreadyPresentingLoginController_thenReturnsYES {
+    SFUserAccountManager *manager = [SFUserAccountManager sharedInstance];
+
+    // Regression guard: the standard login controller must still be recognized.
+    SFLoginViewController *loginController = [[SFLoginViewController alloc] init];
+    SFSDKNavigationController *loginNav = [[SFSDKNavigationController alloc] initWithRootViewController:loginController];
+    XCTAssertTrue([manager isAlreadyPresentingLoginController:loginNav],
+                  @"A presented SFLoginViewController should be recognized as already presenting login UI.");
+
+    // The defect: the biometric fallback picker must also be recognized so it gets dismissed
+    // before the Advanced Auth retry presents the ASWebAuthenticationSession.
+    SFSDKLoginHostListViewController *hostListViewController = [[SFSDKLoginHostListViewController alloc] initWithStyle:UITableViewStylePlain];
+    SFSDKNavigationController *hostListNav = [[SFSDKNavigationController alloc] initWithRootViewController:hostListViewController];
+    XCTAssertTrue([manager isAlreadyPresentingLoginController:hostListNav],
+                  @"A presented biometric-fallback login-host picker should be recognized as already "
+                  @"presenting login UI so it is dismissed before the Advanced Auth session starts.");
+
+    // Negative guard: an unrelated view controller must not be treated as a login screen.
+    UIViewController *unrelated = [[UIViewController alloc] init];
+    XCTAssertFalse([manager isAlreadyPresentingLoginController:unrelated],
+                   @"A non-login view controller should not be treated as an already-presented login screen.");
+    XCTAssertFalse([manager isAlreadyPresentingLoginController:nil],
+                   @"A nil presented view controller should not be treated as an already-presented login screen.");
 }
 
 - (void)testLoginViewControllerCustomizations {
@@ -496,7 +548,10 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
     SFSDKAuthSession *session = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
     SFOAuthCoordinator *coordinator = [[SFOAuthCoordinator alloc] initWithAuthSession:session];
     coordinator.delegate = [SFUserAccountManager sharedInstance];
-    [coordinator beginUserAgentFlow];
+
+    // Invoke the delegate directly — no WKWebView needed since this test only verifies
+    // that loginViewControllerConfig propagates correctly to the presented controller.
+    [[SFUserAccountManager sharedInstance] oauthCoordinator:coordinator didBeginAuthenticationWithView:coordinator.view];
 
     [self waitForExpectations:@[expectation] timeout:20];
     XCTAssertTrue(success, @"SFSDKLoginViewController config should have changed" );
@@ -541,7 +596,7 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
     NSError *deleteAccountError = nil;
     [self.uam deleteAccountForUser:user error:&deleteAccountError];
     XCTAssertNil(deleteAccountError, @"Error deleting account with User ID '%@' and Org ID '%@': %@", identity.userId, identity.orgId, [deleteAccountError localizedDescription]);
-    NSFileManager *fm = [[NSFileManager alloc] init];
+    NSFileManager *fm = [NSFileManager defaultManager];
     XCTAssertFalse([fm fileExistsAtPath:userDir], @"User directory for User ID '%@' and Org ID '%@' should be removed.", identity.userId, identity.orgId);
     SFUserAccount *inMemoryAccount = [self.uam userAccountForUserIdentity:identity];
     XCTAssertNil(inMemoryAccount, @"deleteUser should have removed user account with User ID '%@' and OrgID '%@' from the list of users.", identity.userId, identity.orgId);
@@ -619,7 +674,7 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
 {
     NSString *tokenPath = [[NSBundle bundleForClass:testClass] pathForResource:@"test_credentials" ofType:@"json"];
     NSAssert(nil != tokenPath, @"Test config file not found!");
-    NSFileManager *fm = [[NSFileManager alloc] init];
+    NSFileManager *fm = [NSFileManager defaultManager];
     NSData *tokenJson = [fm contentsAtPath:tokenPath];
     id jsonResponse = [SFJsonUtils objectFromJSONData:tokenJson];
     NSAssert(jsonResponse != nil, @"Error parsing JSON from config file: %@", [SFJsonUtils lastError]);
@@ -653,5 +708,598 @@ static NSString * const kOrgIdFormatString = @"00D000000000062EA%lu";
     return credentials;
 }
 
+- (void)testUserAccountEncoding {
+    NSData *data;
+    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
 
+    // Setup credentials
+    SFOAuthCredentials *credentials = [[SFOAuthCredentials alloc] initWithIdentifier:[NSString stringWithFormat:@"identifier-%lu", (unsigned long)index] clientId:@"fakeClientIdForTesting" encrypted:YES];
+    [credentials setIdentityUrl: [NSURL URLWithString:@"https://test.salesforce.com/id/00DS0000000IDdtWAH/005S0000004y9JkCAF"]];
+    
+    // Setup user
+    SFUserAccount *userIn = [[SFUserAccount alloc] initWithCredentials:credentials];
+    userIn.accessScopes = [NSSet setWithObjects:@"scope1", @"scope2", nil];
+    userIn.idData = [self sampleIdentityData];
+    [userIn setAccessRestrictions:SFUserAccountAccessRestrictionChatter];
+    NSDictionary *customData = @{
+        @"string": @"myString",
+        @"number": @5,
+        @"date": [NSDate now],
+        @"null": [NSNull null],
+        @"array": @[@"one", @"two"]
+    };
+    [userIn setCustomDataObject:customData forKey:@"allTheThings"];
+
+    // Archive/unarchive
+    [archiver encodeObject:userIn forKey:@"account"];
+    [archiver finishEncoding];
+    data = archiver.encodedData;
+    
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:nil];
+    unarchiver.requiresSecureCoding = YES;
+    SFUserAccount *userOut = [unarchiver decodeObjectOfClass:[SFUserAccount class] forKey:@"account"];
+    
+    XCTAssertNotNil(userOut, @"couldn't unarchive user account");
+    XCTAssertNotNil(userOut.credentials, @"couldn't unarchive credentials");
+    XCTAssertNotNil(userOut.idData, @"couldn't unarchive idData");
+   
+    XCTAssertEqualObjects(userIn.customData, userOut.customData, @"customData mismatch");
+    XCTAssertEqual(userIn.accessScopes.count, userOut.accessScopes.count);
+    XCTAssertEqual(userIn.accessRestrictions, userOut.accessRestrictions, @"accessRestrictions mismatch");
+}
+
+- (void)test_givenPersistedFeatureFlags_whenEncodeAndDecode_thenFlagsRoundtrip {
+    SFOAuthCredentials *credentials = [[SFOAuthCredentials alloc] initWithIdentifier:@"identifier-ff-roundtrip"
+                                                                            clientId:@"fakeClientIdForTesting"
+                                                                           encrypted:NO];
+    [credentials setIdentityUrl:[NSURL URLWithString:@"https://test.salesforce.com/id/00DS0000000IDdtWAH/005S0000004y9JkCAF"]];
+    SFUserAccount *userIn = [[SFUserAccount alloc] initWithCredentials:credentials];
+    userIn.persistedFeatureFlags = [NSSet setWithObjects:@"BW", @"QR", nil];
+
+    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
+    [archiver encodeObject:userIn forKey:@"account"];
+    [archiver finishEncoding];
+    NSData *data = archiver.encodedData;
+
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:nil];
+    unarchiver.requiresSecureCoding = YES;
+    SFUserAccount *userOut = [unarchiver decodeObjectOfClass:[SFUserAccount class] forKey:@"account"];
+
+    XCTAssertNotNil(userOut, @"Should unarchive successfully");
+    XCTAssertEqual(userOut.persistedFeatureFlags.count, 2u, @"Should decode both feature flags");
+    XCTAssertTrue([userOut.persistedFeatureFlags containsObject:@"BW"], @"BW flag should roundtrip");
+    XCTAssertTrue([userOut.persistedFeatureFlags containsObject:@"QR"], @"QR flag should roundtrip");
+}
+
+- (void)testMigrateRefreshAuthRequest {
+    // Setup SFSDKAppConfig with test data
+    NSString *testConsumerKey = @"TestConsumerKey123";
+    NSString *testRedirectURI = @"testapp://oauth/callback";
+    
+    NSDictionary *configDict = @{
+        @"remoteAccessConsumerKey": testConsumerKey,
+        @"oauthRedirectURI": testRedirectURI,
+        @"oauthScopes": @[@"api", @"refresh_token"]
+    };
+    
+    SFSDKAppConfig *appConfig = [[SFSDKAppConfig alloc] initWithDict:configDict];
+    XCTAssertNotNil(appConfig, @"Failed to create SFSDKAppConfig");
+    
+    // Call migrateRefreshAuthRequest
+    SFSDKAuthRequest *request = [self.uam migrateRefreshAuthRequest:appConfig];
+    
+    // Verify the request properties
+    XCTAssertNotNil(request, @"Request should not be nil");
+    XCTAssertEqualObjects(request.oauthClientId, testConsumerKey, @"OAuth client ID should match app config");
+    XCTAssertEqualObjects(request.oauthCompletionUrl, testRedirectURI, @"OAuth redirect URI should match app config");
+    XCTAssertEqualObjects(request.loginHost, self.uam.loginHost, @"Login host should match user account manager");
+    XCTAssertEqualObjects(request.additionalOAuthParameterKeys, self.uam.additionalOAuthParameterKeys, @"Additional OAuth parameter keys should match user account manager");
+    XCTAssertNotNil(request.scene, @"Scene should be set");
+}
+
+- (void)testMigrateRefreshToken {
+    // Create a test user account
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+    testUser.credentials.refreshToken = @"oldRefreshToken123";
+    [self.uam setCurrentUserInternal:testUser];
+    
+    // Setup SFSDKAppConfig
+    NSString *testConsumerKey = @"NewConsumerKey456";
+    NSString *testRedirectURI = @"newapp://oauth/callback";
+    NSDictionary *configDict = @{
+        @"remoteAccessConsumerKey": testConsumerKey,
+        @"oauthRedirectURI": testRedirectURI,
+        @"oauthScopes": @[@"api", @"refresh_token"]
+    };
+    SFSDKAppConfig *appConfig = [[SFSDKAppConfig alloc] initWithDict:configDict];
+    
+    __block BOOL successCallbackInvoked = NO;
+    __block BOOL failureCallbackInvoked = NO;
+    __block SFOAuthInfo *capturedAuthInfo = nil;
+    __block SFUserAccount *capturedUserAccount = nil;
+    __block NSError *capturedError = nil;
+    
+    // Call migrateRefreshToken - this sets up the auth session but doesn't execute the async dispatch
+    [self.uam migrateRefreshToken:testUser
+                     newAppConfig:appConfig
+                          success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {
+                              successCallbackInvoked = YES;
+                              capturedAuthInfo = authInfo;
+                              capturedUserAccount = userAccount;
+                          }
+                          failure:^(SFOAuthInfo *authInfo, NSError *error) {
+                              failureCallbackInvoked = YES;
+                              capturedError = error;
+                          }];
+    
+    // Get the auth session that was created - use the first one in the dictionary
+    NSArray *allKeys = self.uam.authSessions.allKeys;
+    XCTAssertTrue(allKeys.count > 0, @"Auth session should have been created");
+    NSString *sceneId = allKeys.firstObject;
+    SFSDKAuthSession *authSession = self.uam.authSessions[sceneId];
+    
+    // Verify the auth session was created and configured correctly
+    XCTAssertNotNil(authSession, @"Auth session should be created");
+    XCTAssertTrue(authSession.isAuthenticating, @"Auth session should be in authenticating state");
+    XCTAssertNotNil(authSession.authSuccessCallback, @"Success callback should be set");
+    XCTAssertNotNil(authSession.authFailureCallback, @"Failure callback should be set");
+    XCTAssertEqualObjects(authSession.oauthRequest.oauthClientId, testConsumerKey, @"OAuth client ID should match");
+    XCTAssertEqualObjects(authSession.oauthRequest.oauthCompletionUrl, testRedirectURI, @"OAuth redirect URI should match");
+    XCTAssertEqual(authSession.oauthCoordinator.delegate, self.uam, @"OAuth coordinator delegate should be user account manager");
+    
+    // Test the success callback with same refresh token (no revocation)
+    SFOAuthInfo *testAuthInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefresh];
+    SFUserAccount *newUserAccount = [self createNewUserWithIndex:1];
+    newUserAccount.credentials.refreshToken = @"oldRefreshToken123"; // Same token
+    
+    authSession.authSuccessCallback(testAuthInfo, newUserAccount);
+    
+    XCTAssertTrue(successCallbackInvoked, @"Success callback should be invoked");
+    XCTAssertEqual(capturedAuthInfo, testAuthInfo, @"Auth info should be passed through");
+    XCTAssertEqual(capturedUserAccount, newUserAccount, @"User account should be passed through");
+    XCTAssertFalse(failureCallbackInvoked, @"Failure callback should not be invoked");
+    
+    // Reset for next test
+    successCallbackInvoked = NO;
+    capturedAuthInfo = nil;
+    capturedUserAccount = nil;
+    
+    // Test the success callback with different refresh token (should trigger revocation)
+    // Clean up previous session
+    [self.uam.authSessions removeObject:sceneId];
+    
+    // Create a new session since we need to test fresh callback
+    [self.uam migrateRefreshToken:testUser
+                     newAppConfig:appConfig
+                          success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {
+                              successCallbackInvoked = YES;
+                              capturedAuthInfo = authInfo;
+                              capturedUserAccount = userAccount;
+                          }
+                          failure:^(SFOAuthInfo *authInfo, NSError *error) {
+                              failureCallbackInvoked = YES;
+                              capturedError = error;
+                          }];
+    
+    // Get the new auth session
+    allKeys = self.uam.authSessions.allKeys;
+    sceneId = allKeys.firstObject;
+    authSession = self.uam.authSessions[sceneId];
+    
+    SFUserAccount *newUserAccountWithDifferentToken = [self createNewUserWithIndex:2];
+    newUserAccountWithDifferentToken.credentials.refreshToken = @"newRefreshToken789"; // Different token
+    
+    authSession.authSuccessCallback(testAuthInfo, newUserAccountWithDifferentToken);
+    
+    XCTAssertTrue(successCallbackInvoked, @"Success callback should be invoked");
+    XCTAssertEqual(capturedAuthInfo, testAuthInfo, @"Auth info should be passed through");
+    XCTAssertEqual(capturedUserAccount, newUserAccountWithDifferentToken, @"User account should be passed through");
+    
+    // Test the failure callback
+    failureCallbackInvoked = NO;
+    successCallbackInvoked = NO;
+    
+    NSError *testError = [NSError errorWithDomain:@"TestErrorDomain" code:123 userInfo:@{@"message": @"Test error"}];
+    authSession.authFailureCallback(testAuthInfo, testError);
+    
+    XCTAssertTrue(failureCallbackInvoked, @"Failure callback should be invoked");
+    XCTAssertEqual(capturedError, testError, @"Error should be passed through");
+    XCTAssertFalse(successCallbackInvoked, @"Success callback should not be invoked");
+    
+    // Clean up
+    [self.uam.authSessions removeObject:sceneId];
+}
+
+- (void)testMigrateRefreshToken_whenUserIsNotCurrentUser_revokesMigratedUsersToken {
+    // Given: user B is the current user, and user A (a different, background account) is the one
+    // being migrated. Their refresh tokens are distinct.
+    SFUserAccount *userA = [self createNewUserWithIndex:0];
+    userA.credentials.refreshToken = @"userA_oldRefreshToken";
+    SFUserAccount *userB = [self createNewUserWithIndex:1];
+    userB.credentials.refreshToken = @"userB_refreshToken";
+    [self.uam setCurrentUserInternal:userB];
+
+    // Capture whichever credentials get revoked.
+    SFSDKRevokeCapturingOAuthClient *revokeClient = [[SFSDKRevokeCapturingOAuthClient alloc] init];
+    SFAuthClientFactoryBlock originalFactory = self.uam.authClient;
+    self.uam.authClient = ^{ return revokeClient; };
+
+    NSDictionary *configDict = @{
+        @"remoteAccessConsumerKey": @"NewConsumerKey456",
+        @"oauthRedirectURI": @"newapp://oauth/callback",
+        @"oauthScopes": @[@"api", @"refresh_token"]
+    };
+    SFSDKAppConfig *appConfig = [[SFSDKAppConfig alloc] initWithDict:configDict];
+
+    // When: migrate the non-current user A, and the migration succeeds with a rotated token.
+    [self.uam migrateRefreshToken:userA
+                     newAppConfig:appConfig
+                          success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {}
+                          failure:^(SFOAuthInfo *authInfo, NSError *error) {}];
+
+    NSString *sceneId = self.uam.authSessions.allKeys.firstObject;
+    SFSDKAuthSession *authSession = self.uam.authSessions[sceneId];
+
+    SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefresh];
+    SFUserAccount *migratedAccount = [self createNewUserWithIndex:2];
+    migratedAccount.credentials.refreshToken = @"userA_newRefreshToken"; // rotated -> triggers revoke
+    authSession.authSuccessCallback(authInfo, migratedAccount);
+
+    // Then: the migrated user A's old token is revoked -- NOT the current user B's token.
+    XCTAssertEqual(revokeClient.revokeCallCount, 1, @"Exactly one refresh token should be revoked");
+    XCTAssertEqualObjects(revokeClient.revokedCredentials.refreshToken, @"userA_oldRefreshToken",
+                          @"Should revoke the migrated (passed-in) user's token, not the current user's");
+    XCTAssertNotEqualObjects(revokeClient.revokedCredentials.refreshToken, @"userB_refreshToken",
+                             @"Must not revoke the current user's token when migrating a background account");
+
+    // Cleanup
+    self.uam.authClient = originalFactory;
+    [self.uam.authSessions removeObject:sceneId];
+}
+
+#pragma mark - upgradeToDPoP
+
+- (void)testUpgradeToDPoP_alreadyDPoP_isNoOpAndUserUnchanged {
+    // Given: a user whose session is already DPoP-bound.
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+    testUser.credentials.tokenType = @"DPoP";
+    testUser.credentials.refreshToken = @"alreadyDPoPRefreshToken";
+
+    // Capture whichever credentials get revoked, so we can confirm no revoke -- and therefore no
+    // migration -- ever happens.
+    SFSDKRevokeCapturingOAuthClient *revokeClient = [[SFSDKRevokeCapturingOAuthClient alloc] init];
+    SFAuthClientFactoryBlock originalFactory = self.uam.authClient;
+    self.uam.authClient = ^{ return revokeClient; };
+
+    __block BOOL successCallbackInvoked = NO;
+    __block BOOL failureCallbackInvoked = NO;
+    __block SFUserAccount *capturedUserAccount = nil;
+
+    // When: upgrading a session that's already DPoP-bound.
+    [self.uam upgradeToDPoP:testUser
+                     success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {
+                         successCallbackInvoked = YES;
+                         capturedUserAccount = userAccount;
+                     }
+                     failure:^(SFOAuthInfo *authInfo, NSError *error) {
+                         failureCallbackInvoked = YES;
+                     }];
+
+    // Then: the success block fires immediately with the same user, and no migration/auth
+    // session was ever created -- proof that migrateRefreshToken was never invoked.
+    XCTAssertTrue(successCallbackInvoked, @"Success callback should be invoked for a no-op upgrade");
+    XCTAssertFalse(failureCallbackInvoked, @"Failure callback should not be invoked for a no-op upgrade");
+    XCTAssertEqual(capturedUserAccount, testUser, @"The unchanged user account should be passed back");
+    XCTAssertEqual(self.uam.authSessions.allKeys.count, 0, @"No auth session should be created for a no-op upgrade");
+    XCTAssertEqual(revokeClient.revokeCallCount, 0, @"No refresh token should be revoked for a no-op upgrade");
+    XCTAssertEqualObjects(testUser.credentials.refreshToken, @"alreadyDPoPRefreshToken",
+                          @"The refresh token must be untouched by a no-op upgrade");
+    XCTAssertEqualObjects(testUser.credentials.tokenType, @"DPoP",
+                          @"The token type must be untouched by a no-op upgrade");
+
+    // Cleanup
+    self.uam.authClient = originalFactory;
+}
+
+#pragma mark - downgradeFromDPoP
+
+/** Reads the raw public key bytes for a DPoP key pair so tests can tell a retained key apart
+ from a freshly-minted replacement (DPoPKeyStore's lookup is get-or-create, so a non-nil result
+ alone doesn't prove whether the original key survived). */
+- (NSData *)publicKeyDataForKeyPair:(SFSDKDPoPKeyPair *)keyPair {
+    CFErrorRef copyError = NULL;
+    NSData *data = (NSData *)CFBridgingRelease(SecKeyCopyExternalRepresentation(keyPair.publicKey, &copyError));
+    XCTAssertNotNil(data, @"Should be able to read the public key's raw representation");
+    return data;
+}
+
+- (void)testDowngradeFromDPoP_delegatesWithSameAppConfigAndUseDPoPNo {
+    // Given: a DPoP-bound user with a specific client id / redirect URI / scopes.
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+    testUser.credentials.tokenType = @"DPoP";
+    testUser.credentials.clientId = @"existingClientId";
+    testUser.credentials.redirectUri = @"existingapp://oauth/callback";
+    testUser.credentials.scopes = @[@"api", @"refresh_token"];
+
+    // When: downgrading from DPoP.
+    [self.uam downgradeFromDPoP:testUser
+                         success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {}
+                         failure:^(SFOAuthInfo *authInfo, NSError *error) {}];
+
+    // Then: the migration is set up against the SAME connected app, with useDPoP forced to NO --
+    // beating the process-wide DPoP flag, whatever it's set to.
+    NSString *sceneId = self.uam.authSessions.allKeys.firstObject;
+    XCTAssertNotNil(sceneId, @"Auth session should have been created");
+    SFSDKAuthSession *authSession = self.uam.authSessions[sceneId];
+
+    XCTAssertEqualObjects(authSession.oauthRequest.oauthClientId, testUser.credentials.clientId,
+                          @"Downgrade should reuse the user's existing client id");
+    XCTAssertEqualObjects(authSession.oauthRequest.oauthCompletionUrl, testUser.credentials.redirectUri,
+                          @"Downgrade should reuse the user's existing redirect URI");
+    XCTAssertEqualObjects(authSession.oauthRequest.useDPoP, @NO,
+                          @"Downgrade must force useDPoP:NO regardless of the global flag");
+
+    // Clean up
+    [self.uam.authSessions removeObject:sceneId];
+}
+
+- (void)testDowngradeFromDPoP_alreadyBearer_isNoOpAndUserUnchanged {
+    // Given: a user whose session is already unbound (Bearer).
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+    testUser.credentials.tokenType = @"Bearer";
+    testUser.credentials.refreshToken = @"alreadyBearerRefreshToken";
+
+    // Capture whichever credentials get revoked, so we can confirm no revoke -- and therefore no
+    // migration -- ever happens.
+    SFSDKRevokeCapturingOAuthClient *revokeClient = [[SFSDKRevokeCapturingOAuthClient alloc] init];
+    SFAuthClientFactoryBlock originalFactory = self.uam.authClient;
+    self.uam.authClient = ^{ return revokeClient; };
+
+    __block BOOL successCallbackInvoked = NO;
+    __block BOOL failureCallbackInvoked = NO;
+    __block SFUserAccount *capturedUserAccount = nil;
+
+    // When: downgrading a session that's already Bearer.
+    [self.uam downgradeFromDPoP:testUser
+                         success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {
+                             successCallbackInvoked = YES;
+                             capturedUserAccount = userAccount;
+                         }
+                         failure:^(SFOAuthInfo *authInfo, NSError *error) {
+                             failureCallbackInvoked = YES;
+                         }];
+
+    // Then: the success block fires immediately with the same user, and no migration/auth
+    // session was ever created -- proof that migrateRefreshToken was never invoked.
+    XCTAssertTrue(successCallbackInvoked, @"Success callback should be invoked for a no-op downgrade");
+    XCTAssertFalse(failureCallbackInvoked, @"Failure callback should not be invoked for a no-op downgrade");
+    XCTAssertEqual(capturedUserAccount, testUser, @"The unchanged user account should be passed back");
+    XCTAssertEqual(self.uam.authSessions.allKeys.count, 0, @"No auth session should be created for a no-op downgrade");
+    XCTAssertEqual(revokeClient.revokeCallCount, 0, @"No refresh token should be revoked for a no-op downgrade");
+    XCTAssertEqualObjects(testUser.credentials.refreshToken, @"alreadyBearerRefreshToken",
+                          @"The refresh token must be untouched by a no-op downgrade");
+    XCTAssertEqualObjects(testUser.credentials.tokenType, @"Bearer",
+                          @"The token type must be untouched by a no-op downgrade");
+
+    // Cleanup
+    self.uam.authClient = originalFactory;
+}
+
+- (void)testDowngradeFromDPoP_successCleansUpObsoleteDPoPKeyAndNonce {
+    // Given: a DPoP-bound user with real key material and a cached nonce. Stub the auth client so
+    // the refresh-token-rotated revoke is captured instead of going over the network -- but set
+    // `mimicsProductionRevokeSideEffect` so the stub still reproduces the real auth client's
+    // synchronous side effect of clearing preMigrationCredentials' tokenType (among other fields)
+    // via `-[SFOAuthCredentials revoke]`. Cleanup must still fire after that happens: the
+    // production code must snapshot the DPoP-ness of preMigrationCredentials before the revoke
+    // block runs, not read it afterward.
+    SFSDKRevokeCapturingOAuthClient *revokeClient = [[SFSDKRevokeCapturingOAuthClient alloc] init];
+    revokeClient.mimicsProductionRevokeSideEffect = YES;
+    SFAuthClientFactoryBlock originalFactory = self.uam.authClient;
+    self.uam.authClient = ^{ return revokeClient; };
+
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+    testUser.credentials.tokenType = @"DPoP";
+
+    NSURL *tokenURL = [NSURL URLWithString:@"https://login.salesforce.com/services/oauth2/token"];
+    [SFSDKDPoPNonceCache.shared setNonce:@"pre-downgrade-nonce" htu:tokenURL scope:testUser.credentials.identifier];
+
+    NSError *keyError = nil;
+    SFSDKDPoPKeyPair *originalKeyPair = [SFSDKDPoPKeyStore.shared keyPairForCredentials:testUser.credentials error:&keyError];
+    XCTAssertNil(keyError, @"Seeding the pre-downgrade key pair should succeed");
+    NSData *originalPublicKeyData = [self publicKeyDataForKeyPair:originalKeyPair];
+
+    [self.uam downgradeFromDPoP:testUser
+                         success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {}
+                         failure:^(SFOAuthInfo *authInfo, NSError *error) {}];
+
+    NSString *sceneId = self.uam.authSessions.allKeys.firstObject;
+    SFSDKAuthSession *authSession = self.uam.authSessions[sceneId];
+
+    // When: the downgrade succeeds with a Bearer result.
+    SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefreshTokenMigration];
+    SFUserAccount *bearerUserAccount = [self createNewUserWithIndex:1];
+    bearerUserAccount.credentials.tokenType = @"Bearer";
+    bearerUserAccount.credentials.refreshToken = @"newBearerRefreshToken";
+    authSession.authSuccessCallback(authInfo, bearerUserAccount);
+
+    // Then: the pre-downgrade DPoP nonce is gone.
+    XCTAssertNil([SFSDKDPoPNonceCache.shared latestForScope:testUser.credentials.identifier],
+                @"Obsolete DPoP nonce should be cleared after a successful downgrade");
+
+    // And: the pre-downgrade DPoP key pair is gone -- a fresh lookup for the same identifier mints
+    // a brand-new key rather than returning the seeded one.
+    NSError *newKeyError = nil;
+    SFSDKDPoPKeyPair *regeneratedKeyPair = [SFSDKDPoPKeyStore.shared keyPairForCredentials:testUser.credentials error:&newKeyError];
+    XCTAssertNil(newKeyError);
+    NSData *regeneratedPublicKeyData = [self publicKeyDataForKeyPair:regeneratedKeyPair];
+    XCTAssertNotEqualObjects(originalPublicKeyData, regeneratedPublicKeyData,
+                            @"Obsolete DPoP key pair should have been deleted, forcing a fresh key on next lookup");
+
+    // Clean up
+    [self.uam.authSessions removeObject:sceneId];
+    [SFSDKDPoPNonceCache.shared clearForScope:testUser.credentials.identifier];
+    [SFSDKDPoPKeyStore.shared deleteForCredentials:testUser.credentials];
+    self.uam.authClient = originalFactory;
+}
+
+- (void)testDowngradeFromDPoP_failureRetainsDPoPKeyAndNonce {
+    // Given: a DPoP-bound user with real key material and a cached nonce.
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+    testUser.credentials.tokenType = @"DPoP";
+
+    NSURL *tokenURL = [NSURL URLWithString:@"https://login.salesforce.com/services/oauth2/token"];
+    [SFSDKDPoPNonceCache.shared setNonce:@"still-working-nonce" htu:tokenURL scope:testUser.credentials.identifier];
+
+    NSError *keyError = nil;
+    SFSDKDPoPKeyPair *originalKeyPair = [SFSDKDPoPKeyStore.shared keyPairForCredentials:testUser.credentials error:&keyError];
+    XCTAssertNil(keyError);
+    NSData *originalPublicKeyData = [self publicKeyDataForKeyPair:originalKeyPair];
+
+    [self.uam downgradeFromDPoP:testUser
+                         success:^(SFOAuthInfo *authInfo, SFUserAccount *userAccount) {}
+                         failure:^(SFOAuthInfo *authInfo, NSError *error) {}];
+
+    NSString *sceneId = self.uam.authSessions.allKeys.firstObject;
+    SFSDKAuthSession *authSession = self.uam.authSessions[sceneId];
+
+    // When: the downgrade fails (e.g. the user cancels the re-auth).
+    SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefreshTokenMigration];
+    NSError *testError = [NSError errorWithDomain:@"TestErrorDomain" code:1 userInfo:nil];
+    authSession.authFailureCallback(authInfo, testError);
+
+    // Then: the still-working DPoP session's nonce and key pair are untouched.
+    XCTAssertEqualObjects([SFSDKDPoPNonceCache.shared latestForScope:testUser.credentials.identifier],
+                         @"still-working-nonce",
+                         @"A failed downgrade must retain the original DPoP nonce");
+
+    NSError *lookupError = nil;
+    SFSDKDPoPKeyPair *keyPairAfterFailure = [SFSDKDPoPKeyStore.shared keyPairForCredentials:testUser.credentials error:&lookupError];
+    XCTAssertNil(lookupError);
+    NSData *publicKeyDataAfterFailure = [self publicKeyDataForKeyPair:keyPairAfterFailure];
+    XCTAssertEqualObjects(originalPublicKeyData, publicKeyDataAfterFailure,
+                         @"A failed downgrade must retain the original DPoP key pair, not mint a new one");
+
+    // Clean up
+    [self.uam.authSessions removeObject:sceneId];
+    [SFSDKDPoPNonceCache.shared clearForScope:testUser.credentials.identifier];
+    [SFSDKDPoPKeyStore.shared deleteForCredentials:testUser.credentials];
+}
+
+- (void)testNotifyLoginCompletion_PostsMigrateRefreshTokenNotification {
+    // Given
+    SFUserAccount *testUser = [self createNewUserWithIndex:0];
+
+    SFOAuthInfo *authInfo = [[SFOAuthInfo alloc] initWithAuthType:SFOAuthTypeRefreshTokenMigration];
+
+    __block BOOL notificationReceived = NO;
+    __block NSDictionary *receivedUserInfo = nil;
+
+    // Set up notification observer
+    id observer = [[NSNotificationCenter defaultCenter] addObserverForName:kSFNotificationUserDidMigrateRefreshToken
+                                                                    object:self.uam
+                                                                     queue:nil
+                                                                usingBlock:^(NSNotification *notification) {
+        notificationReceived = YES;
+        receivedUserInfo = notification.userInfo;
+    }];
+
+    // When
+    [self.uam notifyLoginCompletion:testUser authInfo:authInfo];
+
+    // Then
+    XCTAssertTrue(notificationReceived, @"Should have received kSFNotificationUserDidMigrateRefreshToken notification");
+    XCTAssertNotNil(receivedUserInfo, @"Notification userInfo should not be nil");
+    XCTAssertEqual(receivedUserInfo[kSFNotificationUserInfoAccountKey], testUser, @"User account should match in notification userInfo");
+    XCTAssertEqual(receivedUserInfo[kSFNotificationUserInfoAuthTypeKey], authInfo, @"Auth info should match in notification userInfo");
+
+    // Clean up
+    [[NSNotificationCenter defaultCenter] removeObserver:observer];
+}
+
+#pragma mark - Background-thread UIKit access regression tests
+
+// Seed an in-progress auth session for every connected scene so that
+// -authenticateWithCompletion:...scene:... short-circuits to NO synchronously (see
+// SFUserAccountManager.m) without starting a live auth flow. Returns the scene ids that were seeded
+// so the caller can remove them in teardown.
+- (NSArray<NSString *> *)seedAuthenticatingSessionsForAllConnectedScenes {
+    NSMutableArray<NSString *> *seededSceneIds = [NSMutableArray array];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        NSString *sceneId = scene.session.persistentIdentifier;
+        if (!sceneId) {
+            continue;
+        }
+        SFSDKAuthRequest *request = [self.uam defaultAuthRequest];
+        SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
+        authSession.isAuthenticating = YES;
+        self.uam.authSessions[sceneId] = authSession;
+        [seededSceneIds addObject:sceneId];
+    }
+    return seededSceneIds;
+}
+
+// Regression test for the background-thread UIKit fix: -[SFUserAccountManager loginWithCompletion:failure:]
+// iterates [UIApplication connectedScenes], a main-thread-only UIKit API. A REST request that hits the
+// login branch can call this on a background thread, so the entry point marshals to the main thread.
+// With an in-progress auth session seeded for every scene, the call short-circuits to a synchronous NO.
+// Verify the background invocation preserves that BOOL result and completes without hanging.
+- (void)testLoginWithCompletionFromBackgroundThreadPreservesResult {
+    NSArray<NSString *> *seededSceneIds = [self seedAuthenticatingSessionsForAllConnectedScenes];
+    XCTAssertTrue(seededSceneIds.count > 0, @"Precondition: at least one connected scene is required");
+
+    BOOL mainThreadResult = [self.uam loginWithCompletion:nil failure:nil];
+
+    XCTestExpectation *expectation = [self expectationWithDescription:@"loginWithCompletion returns from a background thread"];
+    __block BOOL backgroundResult = YES;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        XCTAssertFalse([NSThread isMainThread], @"Precondition: the call must originate off the main thread");
+        backgroundResult = [self.uam loginWithCompletion:nil failure:nil];
+        [expectation fulfill];
+    });
+    [self waitForExpectations:@[expectation] timeout:10];
+
+    XCTAssertEqual(backgroundResult, mainThreadResult,
+                   @"A background invocation must preserve the synchronous BOOL result of the main-thread invocation");
+    XCTAssertFalse(backgroundResult,
+                   @"With an in-progress auth session seeded for every scene, login should short-circuit to NO");
+
+    for (NSString *sceneId in seededSceneIds) {
+        [self.uam.authSessions removeObject:sceneId];
+    }
+}
+
+// Regression test for the background-thread UIKit fix: the scene-based login path reaches
+// -[SFUserAccountManager authenticateWithCompletion:failure:scene:...], which reads
+// scene.session.persistentIdentifier — a main-thread-only UIKit API. It marshals to the main thread
+// when invoked off it. Drive it through the public -loginWithCompletion:failure:scene: wrapper from a
+// background queue and verify the synchronous BOOL result is preserved and the call does not hang.
+- (void)testLoginWithCompletionForSceneFromBackgroundThreadPreservesResult {
+    UIScene *scene = [UIApplication sharedApplication].connectedScenes.allObjects.firstObject;
+    XCTAssertNotNil(scene, @"Precondition: at least one connected scene is required");
+    NSString *sceneId = scene.session.persistentIdentifier;
+
+    SFSDKAuthRequest *request = [self.uam defaultAuthRequest];
+    SFSDKAuthSession *authSession = [[SFSDKAuthSession alloc] initWith:request credentials:nil];
+    authSession.isAuthenticating = YES;
+    self.uam.authSessions[sceneId] = authSession;
+
+    BOOL mainThreadResult = [self.uam loginWithCompletion:nil failure:nil scene:scene];
+
+    XCTestExpectation *expectation = [self expectationWithDescription:@"scene login returns from a background thread"];
+    __block BOOL backgroundResult = YES;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        XCTAssertFalse([NSThread isMainThread], @"Precondition: the call must originate off the main thread");
+        backgroundResult = [self.uam loginWithCompletion:nil failure:nil scene:scene];
+        [expectation fulfill];
+    });
+    [self waitForExpectations:@[expectation] timeout:10];
+
+    XCTAssertEqual(backgroundResult, mainThreadResult,
+                   @"A background invocation must preserve the synchronous BOOL result of the main-thread invocation");
+    XCTAssertFalse(backgroundResult,
+                   @"With an in-progress auth session seeded for the scene, authentication should short-circuit to NO");
+
+    [self.uam.authSessions removeObject:sceneId];
+}
 @end

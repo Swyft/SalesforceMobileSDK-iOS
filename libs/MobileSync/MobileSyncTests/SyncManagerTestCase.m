@@ -30,6 +30,8 @@
 #import <SalesforceSDKCore/TestSetupUtils.h>
 #import "TestSyncUpTarget.h"
 #import "SyncManagerTestCase.h"
+#import <MobileSync/MobileSync-Swift.h>
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 
 static NSException *authException = nil;
 
@@ -126,12 +128,16 @@ static NSException *authException = nil;
 
 
 - (NSArray*) createAccountsLocally:(NSArray*)names {
+    return [self createAccountsLocally:names mutateBlock:nil];
+}
+
+- (NSArray *)createAccountsLocally:(NSArray*)names mutateBlock:(SFRecordMutatorBlock)mutateBlock {
     NSMutableArray* createdAccounts = [NSMutableArray new];
     NSMutableDictionary* attributes = [NSMutableDictionary new];
     attributes[TYPE] = ACCOUNT_TYPE;
     for (NSString* name in names) {
         NSMutableDictionary* account = [NSMutableDictionary new];
-        NSString* accountId = [self createLocalId];
+        NSString* accountId = [SFSyncTarget createLocalId];
         account[ID] = accountId;
         account[NAME] = name;
         account[DESCRIPTION] = [self createDescription:name];
@@ -140,13 +146,32 @@ static NSException *authException = nil;
         account[kSyncTargetLocallyCreated] = @YES;
         account[kSyncTargetLocallyDeleted] = @NO;
         account[kSyncTargetLocallyUpdated] = @NO;
+        if (mutateBlock) { account = mutateBlock(account); }
         [createdAccounts addObject:account];
     }
     return [self.store upsertEntries:createdAccounts toSoup:ACCOUNTS_SOUP];
 }
 
-- (NSString*) createLocalId {
-    return [NSString stringWithFormat:@"local_%08d", arc4random_uniform(100000000)];
+- (NSArray *)createContactsForAccountsLocally:(NSArray *)accountIds numberOfContactsPerAccounts:(int)numberOfContacts {
+    NSMutableArray* createdContacts = [NSMutableArray new];
+    NSMutableDictionary* attributes = [NSMutableDictionary new];
+    attributes[TYPE] = CONTACT_TYPE;
+    for (NSString *accountId in accountIds) {
+        for (int i = 0; i< numberOfContacts; i++) {
+            NSMutableDictionary* contact = [NSMutableDictionary new];
+            NSString *contactId = [SFSyncTarget createLocalId];
+            contact[ID] = contactId;
+            contact[ACCOUNT_ID] = accountId;
+            contact[LAST_NAME] = [self createRecordName:CONTACT_TYPE];
+            contact[ATTRIBUTES] = attributes;
+            contact[kSyncTargetLocal] = @YES;
+            contact[kSyncTargetLocallyCreated] = @YES;
+            contact[kSyncTargetLocallyDeleted] = @NO;
+            contact[kSyncTargetLocallyUpdated] = @NO;
+            [createdContacts addObject:contact];
+        }
+    }
+    return [self.store upsertEntries:createdContacts toSoup:CONTACTS_SOUP];
 }
 
 - (void)createAccountsSoup {
@@ -184,18 +209,16 @@ static NSException *authException = nil;
 }
 
 - (void)deleteRecordsOnServer:(NSArray *)ids objectType:(NSString*)objectType {
-
-    NSMutableArray* requests = [NSMutableArray new];
-    for (NSString* recordId in ids) {
-        SFRestRequest *deleteRequest = [[SFRestAPI sharedInstance] requestForDeleteWithObjectType:objectType objectId:recordId apiVersion:kSFRestDefaultAPIVersion];
-        [requests addObject:deleteRequest];
-        if (requests.count == 25) {
-            [self sendSyncRequest:[[SFRestAPI sharedInstance] batchRequest:requests haltOnError:NO apiVersion:kSFRestDefaultAPIVersion]];
-            [requests removeAllObjects];
-        }
-    }
-    if (requests.count > 0) {
-        [self sendSyncRequest:[[SFRestAPI sharedInstance] batchRequest:requests haltOnError:NO apiVersion:kSFRestDefaultAPIVersion]];
+    NSUInteger maxIdsPerSlice = 200;
+    NSUInteger countIds = ids.count;
+    NSUInteger countSlices = (int) ceil((double) countIds / maxIdsPerSlice);
+            
+    for (NSUInteger slice = 0; slice < countSlices; slice++) {
+        NSUInteger sliceStartIndex = slice*maxIdsPerSlice;
+        NSUInteger sliceEndIndex = MIN(countIds, (slice+1)*maxIdsPerSlice);
+        NSArray* idsToDelete = [ids subarrayWithRange:NSMakeRange(sliceStartIndex, sliceEndIndex-sliceStartIndex)];
+        SFRestRequest* request = [[SFRestAPI sharedInstance] requestForCollectionDelete:YES objectIds:idsToDelete apiVersion:nil];
+        [self sendSyncRequest:request];
     }
 }
 
@@ -205,7 +228,7 @@ static NSException *authException = nil;
 
 - (NSDictionary*)sendSyncRequest:(SFRestRequest*)request ignoreNotFound:(BOOL)ignoreNotFound {
     SFSDKTestRequestListener *listener = [[SFSDKTestRequestListener alloc] init];
-    SFRestFailBlock failBlock = ^(NSError *error, NSURLResponse *rawResponse) {
+    SFRestRequestFailBlock failBlock = ^(id response, NSError *error, NSURLResponse *rawResponse) {
         listener.lastError = error;
         listener.returnStatus = kTestRequestStatusDidFail;
 
@@ -214,9 +237,9 @@ static NSException *authException = nil;
         listener.dataResponse = data;
         listener.returnStatus = kTestRequestStatusDidLoad;
     };
-    [[SFRestAPI sharedInstance] sendRESTRequest:request
-                                      failBlock:failBlock
-                                  completeBlock:completeBlock];
+    [[SFRestAPI sharedInstance] sendRequest:request
+                               failureBlock:failBlock
+                               successBlock:completeBlock];
     [listener waitForCompletion];
     if (listener.lastError && (listener.lastError.code != 404 || !ignoreNotFound)) {
         XCTFail(@"Rest call %@ failed with error %@", request, listener.lastError);
@@ -372,6 +395,11 @@ static NSException *authException = nil;
                 XCTAssertEqualObjects(expectedTargetTyped.parentFieldlist, actualTargetTyped.parentFieldlist);
                 XCTAssertEqualObjects(expectedTargetTyped.childrenFieldlist, actualTargetTyped.childrenFieldlist);
                 XCTAssertEqualObjects(expectedTargetTyped.parentSoqlFilter, actualTargetTyped.parentSoqlFilter);
+            } else if (expectedQueryType == SFSyncDownTargetQueryTypeBriefcase) {
+                XCTAssertTrue([sync.target isKindOfClass:[SFBriefcaseSyncDownTarget class]]);
+                SFBriefcaseSyncDownTarget *expectedTargetTyped = (SFBriefcaseSyncDownTarget *)expectedTarget;
+                SFBriefcaseSyncDownTarget *actualTargetTyped = (SFBriefcaseSyncDownTarget *)sync.target;
+                [self checkBriefcaseInfo:actualTargetTyped.infosMap expectedBriefcaseInfo:expectedTargetTyped.infosMap];
             } else if (expectedQueryType == SFSyncDownTargetQueryTypeCustom) {
                 XCTAssertTrue([sync.target isKindOfClass:[SFSyncDownTarget class]]);
             }
@@ -429,6 +457,22 @@ static NSException *authException = nil;
     [self checkParentInfo:childrenInfo expectedParentInfo:expectedChildrenInfo];
     XCTAssertEqualObjects(expectedChildrenInfo.parentIdFieldName, childrenInfo.parentIdFieldName);
     XCTAssertEqualObjects(expectedChildrenInfo.sobjectTypePlural, childrenInfo.sobjectTypePlural);
+}
+
+- (void)checkBriefcaseInfo:(NSDictionary<NSString *, SFBriefcaseObjectInfo *> *)briefcaseInfo
+     expectedBriefcaseInfo:(NSDictionary<NSString *, SFBriefcaseObjectInfo *> *)expectedBriefcaseInfo {
+    XCTAssertTrue(briefcaseInfo.count > 0);
+    XCTAssertEqual(briefcaseInfo.count, expectedBriefcaseInfo.count);
+
+    for (NSString *name in briefcaseInfo.allKeys) {
+        SFBriefcaseObjectInfo *info = briefcaseInfo[name];
+        SFBriefcaseObjectInfo *expectedInfo = expectedBriefcaseInfo[name];
+        XCTAssertEqualObjects(expectedInfo.soupName, info.soupName);
+        XCTAssertEqualObjects(expectedInfo.sobjectType, info.sobjectType);
+        XCTAssertEqualObjects(expectedInfo.idFieldName, info.idFieldName);
+        XCTAssertEqualObjects(expectedInfo.modificationDateFieldName, info.modificationDateFieldName);
+        XCTAssertEqualObjects(expectedInfo.fieldlist, info.fieldlist);
+    }
 }
 
 - (void)checkStatus:(SFSyncState*)sync
@@ -496,8 +540,8 @@ static NSException *authException = nil;
         XCTAssertEqualObjects(@(expectedLocallyUpdated), recordFromDb[kSyncTargetLocallyUpdated]);
         XCTAssertEqualObjects(@(expectedLocallyDeleted), recordFromDb[kSyncTargetLocallyDeleted]);
         NSString* id = recordFromDb[ID];
-        bool hasLocalIdPrefix = [id hasPrefix:LOCAL_ID_PREFIX];
-        XCTAssertEqual(expectedLocallyCreated, hasLocalIdPrefix);
+        BOOL isLocalId = [SFSyncTarget isLocalId:id];
+        XCTAssertEqual(expectedLocallyCreated, isLocalId);
 
         // Last error field should be empty for a clean record
         if (!expectedDirty) {
@@ -650,6 +694,8 @@ static NSException *authException = nil;
 
     // Runs sync.
     SFSyncUpdateCallbackQueue* queue = [[SFSyncUpdateCallbackQueue alloc] init];
+    
+    NSDate *syncUpStart = [NSDate date];
     [queue runSync:sync syncManager:self.syncManager];
 
     // Checks status updates.
@@ -668,6 +714,9 @@ static NSException *authException = nil;
     } else {
         XCTFail(@"completionStatus value '%ld' not currently supported.", (long)completionStatus);
     }
+    NSDate *syncUpEnd = [NSDate date];
+    NSTimeInterval executionTime = [syncUpEnd timeIntervalSinceDate:syncUpStart];
+    NSLog(@"Sync up executionTime = %f s", executionTime);
 }
 
 
@@ -704,7 +753,7 @@ static NSException *authException = nil;
     for (NSDictionary* record in records) {
         NSString* recordId = record[ID];
         for (NSString* fieldName in [idToFields[recordId] allKeys]) {
-            XCTAssertEqualObjects(idToFields[recordId][fieldName], record[fieldName]);
+            XCTAssertEqualObjects(idToFields[recordId][fieldName], record[fieldName], "Wrong value for field %@ on record %@", fieldName, recordId);
         }
     }
 }
@@ -736,9 +785,7 @@ static NSException *authException = nil;
         NSArray* results = [self.store queryWithQuerySpec:query pageIndex:0 error:nil];
         NSMutableDictionary* account = [[NSMutableDictionary alloc] initWithDictionary:results[0]];
         account[kSyncTargetLocal] = @YES;
-        account[kSyncTargetLocallyCreated] = @NO;
         account[kSyncTargetLocallyDeleted] = @YES;
-        account[kSyncTargetLocallyUpdated] = @NO;
         [deletedAccounts addObject:account];
     }
     [self.store upsertEntries:deletedAccounts toSoup:soupName];

@@ -27,11 +27,11 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 #import "SFSDKSalesforceAnalyticsManager+Internal.h"
 #import "SFUserAccountManager.h"
 #import "SalesforceSDKManager.h"
 #import "SFDirectoryManager.h"
-#import "SFKeyStoreManager.h"
 #import "SFSDKCryptoUtils.h"
 #import "SFSDKAILTNPublisher.h"
 #import "UIDevice+SFHardware.h"
@@ -47,9 +47,11 @@ static NSString * const kAnalyticsUnauthenticatedManagerKey = @"-unauthenticated
 static NSString * const kEventStoresDirectory = @"event_stores";
 static NSString * const kEventStoreEncryptionKeyLabel = @"com.salesforce.eventStore.encryptionKey";
 static NSString * const kAnalyticsOnOffKey = @"ailtn_enabled";
-static NSString * const kSFAppFeatureAiltnEnabled = @"AI";
+static NSString * const kEventStoreGCMEncryptedKey = @"com.salesforce.eventStore.encryption.GCM";
 
 static NSMutableDictionary *analyticsManagerList = nil;
+
+static SInt32 kBatchProcessCount = 100;
 
 @implementation SFSDKSalesforceAnalyticsManager
 
@@ -58,6 +60,7 @@ static NSMutableDictionary *analyticsManagerList = nil;
         analyticsManagerList = [[NSMutableDictionary alloc] init];
     }
 }
+
 
 + (instancetype) sharedInstanceWithUser:(SFUserAccount *) userAccount {
     @synchronized ([SFSDKSalesforceAnalyticsManager class]) {
@@ -74,11 +77,16 @@ static NSMutableDictionary *analyticsManagerList = nil;
         id analyticsMgr = analyticsManagerList[key];
         if (!analyticsMgr) {
             if (userAccount.loginState != SFUserAccountLoginStateLoggedIn) {
-                [SFSDKCoreLogger w:[self class] format:@"%@ A user account must be in the  SFUserAccountLoginStateLoggedIn state in order to create a SFSDKSalesforceAnalyticsManager instance for a user.", NSStringFromSelector(_cmd)];
+                [SFSDKCoreLogger w:[self class] format:@"%@ A user account must be in the SFUserAccountLoginStateLoggedIn state in order to create a SFSDKSalesforceAnalyticsManager instance for a user.", NSStringFromSelector(_cmd)];
                 return nil;
             }
             analyticsMgr = [[self alloc] initWithUser:userAccount];
-            analyticsManagerList[key] = analyticsMgr;
+            if (analyticsMgr) {
+                analyticsManagerList[key] = analyticsMgr;
+            } else {
+                [SFSDKCoreLogger w:[self class] format:@"%@ Unable to create a SFSDKSalesforceAnalyticsManager instance for a user.", NSStringFromSelector(_cmd)];
+                return nil;
+            }
         }
         return analyticsMgr;
     }
@@ -137,12 +145,32 @@ static NSMutableDictionary *analyticsManagerList = nil;
             rootStoreDir = [[SFDirectoryManager sharedManager] globalDirectoryOfType:NSDocumentDirectory components:@[ kEventStoresDirectory ]];
         }
         
-        SFEncryptionKey *encKey = [[SFKeyStoreManager sharedInstance] retrieveKeyWithLabel:kEventStoreEncryptionKeyLabel autoCreate:YES];
+        if (!rootStoreDir) {
+            [SFSDKCoreLogger e:[self class] format:@"Root directory path is nil"];
+            return nil;
+        }
+
+        NSError *error = nil;
+        NSData *encryptionKey = [SFSDKKeyGenerator encryptionKeyFor:kEventStoreEncryptionKeyLabel error:&error];
+        if (error) {
+            [SFSDKCoreLogger e:[self class] format:@"Error getting encryption key: %@", error.localizedDescription];
+        }
+
         DataEncryptorBlock dataEncryptorBlock = ^NSData*(NSData *data) {
-            return [encKey encryptData:data];
+            NSError *error = nil;
+            NSData *encryptedData = [SFSDKEncryptor encryptData:data key:encryptionKey error:&error];
+            if (error) {
+                [SFSDKCoreLogger e:[self class] format:@"Error encrypting data: %@", error.localizedDescription];
+            }
+            return encryptedData;
         };
         DataDecryptorBlock dataDecryptorBlock = ^NSData*(NSData *data) {
-            return [encKey decryptData:data];
+            NSError *error = nil;
+            NSData *decryptedData = [SFSDKEncryptor decryptData:data key:encryptionKey error:&error];
+            if (error) {
+                [SFSDKCoreLogger e:[self class] format:@"Error decrypting data: %@", error.localizedDescription];
+            }
+            return decryptedData;
         };
         _analyticsManager = [[SFSDKAnalyticsManager alloc] initWithStoreDirectory:rootStoreDir dataEncryptorBlock:dataEncryptorBlock dataDecryptorBlock:dataDecryptorBlock deviceAttributes:deviceAttributes];
         _eventStoreManager = self.analyticsManager.storeManager;
@@ -192,16 +220,56 @@ static NSMutableDictionary *analyticsManagerList = nil;
 
 - (void) publishAllEvents {
     @synchronized (self) {
-        NSArray<SFSDKInstrumentationEvent *> *events = [self.eventStoreManager fetchAllEvents];
-        [self publishEvents:events];
+        dispatch_group_t publishEventsGroup = dispatch_group_create();
+
+        if (self.batchingEnabled == NO) {
+            NSArray<SFSDKInstrumentationEvent *> *events = [self.eventStoreManager fetchAllEvents];
+            [self publishEvents:events dispatchGroup:publishEventsGroup];
+        } else {
+            NSArray *eventFiles = [self.eventStoreManager eventFiles];
+            SInt32 i = 0;
+            NSUInteger remainingEvents = eventFiles.count;
+            
+            while (i < eventFiles.count) {
+                NSArray *subEvents = [eventFiles subarrayWithRange:NSMakeRange(i, MIN(kBatchProcessCount, remainingEvents))];
+                //MIN() used because array must be larger than or equal to range size, else exception will be thrown
+                
+                // batch process and use autorelease pool to best manage memory usage in processsing events
+                @autoreleasepool {
+                    NSMutableArray * eventsArray = [NSMutableArray arrayWithCapacity:kBatchProcessCount];
+                    for (SInt32 subCount = 0; subCount < subEvents.count; subCount++) {
+                        
+                        NSString *eventFile = subEvents[subCount];
+                        [eventsArray addObject:[self.eventStoreManager fetchEvent:eventFile]];
+                    }
+                    [self publishEvents:eventsArray dispatchGroup:publishEventsGroup];
+                    i += subEvents.count;
+                    remainingEvents = remainingEvents - subEvents.count;
+                }
+                
+            }
+        }
+        
+        dispatch_group_notify(publishEventsGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),^{
+            [self cleanupBackgroundTask];
+        });
     }
 }
 
 - (void) publishEvents:(NSArray<SFSDKInstrumentationEvent *> *) events {
+    [self publishEvents:events dispatchGroup:nil];
+}
+
+- (void) publishEvents:(NSArray<SFSDKInstrumentationEvent *> *) events dispatchGroup:(nullable dispatch_group_t) dispatchGroup {
     if (events.count == 0 || self.remotes.count == 0) {
         return;
     }
     @synchronized (self) {
+        
+        if (dispatchGroup != nil) {
+            dispatch_group_enter(dispatchGroup);
+        }
+        
         NSMutableArray<NSString *> *eventIds = [[NSMutableArray alloc] init];
         for (SFSDKInstrumentationEvent *event in events) {
             [eventIds addObject:event.eventId];
@@ -243,7 +311,10 @@ static NSMutableDictionary *analyticsManagerList = nil;
                 }
                 publishCompleteBlock = nil;
             }
-            [self cleanupBackgroundTask];
+            
+            if (dispatchGroup != nil) {
+                dispatch_group_leave(dispatchGroup);
+            }
         };
         [self applyTransformAndPublish:currentTpp events:events publishCompleteBlock:publishCompleteBlock];
     }
@@ -280,7 +351,7 @@ static NSMutableDictionary *analyticsManagerList = nil;
     NSString *osName = [curDevice systemName];
     NSString *appTypeStr = [sdkManager getAppTypeAsString];
     NSString *mobileSdkVersion = SALESFORCE_SDK_VERSION;
-    NSString *deviceModel = [curDevice platform];
+    NSString *deviceModel = [curDevice sfsdk_platform];
     NSString *deviceId = [sdkManager deviceId];
     NSString *clientId = sdkManager.appConfig.remoteAccessConsumerKey;
     return [[SFSDKDeviceAppAttributes alloc] initWithAppVersion:appVersion appName:appName osVersion:osVersion osName:osName nativeAppType:appTypeStr mobileSdkVersion:mobileSdkVersion deviceModel:deviceModel deviceId:deviceId clientId:clientId];
@@ -329,14 +400,17 @@ static NSMutableDictionary *analyticsManagerList = nil;
     if (tpp) {
         NSMutableArray *eventsArray = [[NSMutableArray alloc] init];
         for (SFSDKInstrumentationEvent *event in events) {
-            id transformedEvent = [tpp.transform transform:event];
-            if (transformedEvent != nil) {
-                [eventsArray addObject:transformedEvent];
+            @autoreleasepool {
+                id transformedEvent = [tpp.transform transform:event];
+                if (transformedEvent != nil) {
+                    [eventsArray addObject:transformedEvent];
+                }
             }
         }
+
         id<SFSDKAnalyticsPublisher> networkPublisher = tpp.publisher;
         if (networkPublisher) {
-            [networkPublisher publish:eventsArray publishCompleteBlock:publishCompleteBlock];
+            [networkPublisher publish:eventsArray user:self.userAccount publishCompleteBlock:publishCompleteBlock];
         }
     }
 }

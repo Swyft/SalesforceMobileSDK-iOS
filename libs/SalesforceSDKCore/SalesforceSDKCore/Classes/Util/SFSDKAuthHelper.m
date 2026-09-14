@@ -26,53 +26,132 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #import "SalesforceSDKManager.h"
+#import "SalesforceSDKManager+Internal.h"
 #import "SFSDKAppConfig.h"
 #import "SFSDKAuthHelper.h"
 #import "SFUserAccountManager.h"
+#import "SFUserAccountManager+Internal.h"
 #import "SFSDKWindowManager.h"
+#import "SFSDKWindowManager+Internal.h"
 #import "SFDefaultUserManagementViewController.h"
-#import "SFSecurityLockout.h"
+#import "SFApplicationHelper.h"
+#import <SalesforceSDKCore/SalesforceSDKCore-Swift.h>
 
 @implementation SFSDKAuthHelper
 
 + (void)loginIfRequired:(void (^)(void))completionBlock {
-    if (![SFUserAccountManager sharedInstance].currentUser && [SalesforceSDKManager sharedManager].appConfig.shouldAuthenticate) {
-        SFUserAccountManagerSuccessCallbackBlock successBlock = ^(SFOAuthInfo *authInfo,SFUserAccount *userAccount) {
-            if (completionBlock) {
-                completionBlock();
-            }
-        };
-        SFUserAccountManagerFailureCallbackBlock failureBlock = ^(SFOAuthInfo *authInfo, NSError *authError) {
-            [SFSDKCoreLogger e:[self class] format:@"Authentication failed: %@.",[authError localizedDescription]];
-        };
-        BOOL result = [[SFUserAccountManager sharedInstance] loginWithCompletion:successBlock failure:failureBlock];
-        if (!result) {
-            [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:^(BOOL result) {
-                [[SFUserAccountManager sharedInstance] loginWithCompletion:successBlock failure:failureBlock];
-            }];
-        }
-    } else {
-        [self passcodeValidation:completionBlock];
-    }
+    [SFSDKAuthHelper
+     loginIfRequired:[[SFSDKWindowManager sharedManager] defaultScene]
+     completion:completionBlock];
 }
 
-+ (void) passcodeValidation:(void (^)(void))completionBlock  {
-    [SFSecurityLockout setLockScreenSuccessCallbackBlock:^(SFSecurityLockoutAction action) {
-        [SFSDKCoreLogger i:[self class] format:@"Passcode verified, or not configured.  Proceeding with authentication validation."];
++ (void)loginIfRequired:(UIScene *)scene
+             completion:(void (^)(void))completionBlock
+{
+    [SFSDKAuthHelper
+     loginIfRequired:scene
+     frontDoorBridgeUrl:nil
+     codeVerifier:nil
+     completion:completionBlock];
+}
+
++ (void)loginIfRequired:(UIScene *)scene
+              loginHint:(NSString *)loginHint
+              loginHost:(NSString *)loginHost
+             completion:(void (^)(void))completionBlock
+{
+    [self loginIfRequired:scene
+                loginHint:loginHint
+                loginHost:loginHost
+       frontDoorBridgeUrl:nil
+             codeVerifier:nil
+               completion:completionBlock];
+}
+
++ (void)loginIfRequired:(UIScene *)scene
+              loginHint:(NSString *)loginHint
+              loginHost:(NSString *)loginHost
+     frontDoorBridgeUrl:(NSURL * )frontDoorBridgeUrl
+           codeVerifier:(NSString *)codeVerifier
+             completion:(void (^)(void))completionBlock
+{
+    if (!scene) {
+        scene = [[SFSDKWindowManager sharedManager] defaultScene];
+    }
+    
+    [SFSDKAuthHelper registerBlockForLoginNotification:^{
         if (completionBlock) {
             completionBlock();
         }
     }];
-    [SFSecurityLockout setLockScreenFailureCallbackBlock:^{
-        // Note: Failed passcode verification automatically logs out users, which the logout
-        // delegate handler will catch and pass on.  We just log the error and reset launch
-        // state here.
-        [SFSDKCoreLogger e:[self class] format:@"Passcode validation failed.  Logging the user out."];
+
+    if (frontDoorBridgeUrl || [self isDeepLink:loginHost] || [self shouldAuthenticateNewUser]) {
+        SFUserAccountManagerFailureCallbackBlock failureBlock = ^(SFOAuthInfo *authInfo, NSError *authError) {
+            [SFSDKCoreLogger e:[self class] format:@"Authentication failed: %@.", [authError localizedDescription]];
+        };
+        BOOL result = [[SFUserAccountManager sharedInstance]
+                       loginWithCompletion:nil
+                       failure:failureBlock
+                       scene:scene
+                       loginHint:loginHint
+                       loginHost:loginHost
+                       frontDoorBridgeUrl:frontDoorBridgeUrl
+                       codeVerifier:codeVerifier];
+        if (!result) {
+            [[SFUserAccountManager sharedInstance] stopCurrentAuthentication:^(BOOL result) {
+                [[SFUserAccountManager sharedInstance]
+                 loginWithCompletion:nil
+                 failure:failureBlock
+                 scene:scene
+                 loginHint:loginHint
+                 loginHost:loginHost
+                 frontDoorBridgeUrl:frontDoorBridgeUrl
+                 codeVerifier:codeVerifier];
+            }];
+        }
+    } else {
+        [self screenLockValidation:completionBlock];
+    }
+}
+
++ (BOOL)isDeepLink:(NSString *)host {
+    return [host length] > 0;
+}
+
++ (BOOL)shouldAuthenticateNewUser {
+    return ![SFUserAccountManager sharedInstance].currentUser && [SalesforceSDKManager sharedManager].appConfig.shouldAuthenticate;
+}
+
++ (void)loginIfRequired:(UIScene *)scene
+     frontDoorBridgeUrl:(NSURL * )frontDoorBridgeUrl
+           codeVerifier:(NSString *)codeVerifier
+             completion:(void (^)(void))completionBlock
+{
+    [self loginIfRequired:scene
+                loginHint:nil
+                loginHost:nil
+       frontDoorBridgeUrl:frontDoorBridgeUrl
+             codeVerifier:codeVerifier
+               completion:completionBlock];
+}
+
++(void)screenLockValidation:(void (^)(void))completionBlock  {
+    [[SFScreenLockManagerInternal shared] setCallbackBlockWithScreenLockCallbackBlock:^{
+            [SFSDKCoreLogger i:[self class] format:@"Screen unlocked or not configured.  Proceeding with authentication validation."];
+            if (completionBlock) {
+                completionBlock();
+            }
     }];
-    [SFSecurityLockout lock];
+    [[SFScreenLockManagerInternal shared] handleAppForeground];
+    [[SFBiometricAuthenticationManagerInternal shared] handleAppForeground];
 }
 
 + (void)handleLogout:(void (^)(void))completionBlock {
+    UIScene *scene = [[SFSDKWindowManager sharedManager] defaultScene];
+    [SFSDKAuthHelper handleLogout:scene completion:completionBlock];
+}
+
++ (void)handleLogout:(UIScene *)scene completion:(void (^)(void))completionBlock {
     // Multi-user pattern:
     // - If there are two or more existing accounts after logout, let the user choose the account
     //   to switch to.
@@ -84,9 +163,9 @@
     NSArray *allAccounts = [SFUserAccountManager sharedInstance].allUserAccounts;
     if ([allAccounts count] > 1) {
         SFDefaultUserManagementViewController *userSwitchVc = [[SFDefaultUserManagementViewController alloc] initWithCompletionBlock:^(SFUserManagementAction action) {
-            [[SFSDKWindowManager sharedManager].mainWindow.window.rootViewController dismissViewControllerAnimated:YES completion:NULL];
+            [[[SFSDKWindowManager sharedManager] mainWindow:scene].window.rootViewController dismissViewControllerAnimated:YES completion:NULL];
         }];
-        [[SFSDKWindowManager sharedManager].mainWindow.window.rootViewController presentViewController:userSwitchVc animated:YES completion:NULL];
+        [[[SFSDKWindowManager sharedManager] mainWindow:scene].window.rootViewController presentViewController:userSwitchVc animated:YES completion:NULL];
     } else {
         if ([allAccounts count] == 1) {
             [[SFUserAccountManager sharedInstance] switchToUser:([SFUserAccountManager sharedInstance].allUserAccounts)[0]];
@@ -94,25 +173,43 @@
                 completionBlock();
             }
         } else {
-            [self loginIfRequired:completionBlock];
+            [self loginIfRequired:scene completion:completionBlock];
         }
     }
 }
 
++ (void)registerBlockForLoginNotification:(void (^)(void))completionBlock {
+    [[NSNotificationCenter defaultCenter] addObserverForName:kSFNotificationUserDidLogIn object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * note) {
+           if (completionBlock) {
+               completionBlock();
+           }
+       }];
+}
+
 + (void)registerBlockForCurrentUserChangeNotifications:(void (^)(void))completionBlock {
-    [self registerBlockForLogoutNotifications:completionBlock];
+    UIScene *scene = [[SFSDKWindowManager sharedManager] defaultScene];
+    [SFSDKAuthHelper registerBlockForCurrentUserChangeNotifications:scene completion:completionBlock];
+}
+
++ (void)registerBlockForCurrentUserChangeNotifications:(UIScene *)scene completion:(void (^)(void))completionBlock {
+    [self registerBlockForLogoutNotifications:scene completion:completionBlock];
     [self registerBlockForSwitchUserNotifications:completionBlock];
 }
 
 + (void)registerBlockForLogoutNotifications:(void (^)(void))completionBlock {
+    UIScene *scene = [[SFSDKWindowManager sharedManager] defaultScene];
+    [SFSDKAuthHelper registerBlockForLogoutNotifications:scene completion:completionBlock];
+}
+
++ (void)registerBlockForLogoutNotifications:(UIScene *)scene completion:(void (^)(void))completionBlock {
     __weak typeof (self) weakSelf = self;
-    [[NSNotificationCenter defaultCenter] addObserverForName:kSFNotificationUserDidLogout  object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
-        [weakSelf handleLogout:completionBlock];
+    [[NSNotificationCenter defaultCenter] addObserverForName:kSFNotificationUserDidLogout object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+        [weakSelf handleLogout:scene completion:completionBlock];
     }];
 }
 
 + (void)registerBlockForSwitchUserNotifications:(void (^)(void))completionBlock {
-    [[NSNotificationCenter defaultCenter] addObserverForName:kSFNotificationUserDidSwitch   object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * note) {
+    [[NSNotificationCenter defaultCenter] addObserverForName:kSFNotificationUserDidSwitch object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * note) {
         if (completionBlock) {
             completionBlock();
         }

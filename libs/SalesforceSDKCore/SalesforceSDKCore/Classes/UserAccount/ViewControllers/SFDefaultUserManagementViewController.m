@@ -25,6 +25,14 @@
 #import "SFDefaultUserManagementViewController+Internal.h"
 #import "SFDefaultUserManagementListViewController.h"
 #import "SFUserAccountManager.h"
+#import "UIColor+SFColors.h"
+
+@interface SFDefaultUserManagementViewController ()
+
+@property (nonatomic, strong) UIScene *scene;
+
+@end
+
 @implementation SFDefaultUserManagementViewController
 
 - (id)initWithCompletionBlock:(SFUserManagementCompletionBlock)completionBlock
@@ -39,7 +47,8 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-	SFDefaultUserManagementListViewController *rvc = [[SFDefaultUserManagementListViewController alloc] initWithStyle:UITableViewStylePlain];
+    self.navigationBar.backgroundColor = [UIColor salesforceSystemBackgroundColor];
+    SFDefaultUserManagementListViewController *rvc = [[SFDefaultUserManagementListViewController alloc] initWithStyle:UITableViewStylePlain];
     [self pushViewController:rvc animated:NO];
 }
 
@@ -67,7 +76,7 @@
 
 - (void)actionLogout
 {
-    [[SFUserAccountManager sharedInstance] logout];
+    [[SFUserAccountManager sharedInstance] logout:SFLogoutReasonUserInitiated];
 }
 
 - (void)actionSwitchUser:(SFUserAccount *)user
@@ -90,6 +99,7 @@
 {
     self.action = action;
     self.actionAccount = actionAccount;
+    self.scene = self.view.window.windowScene;
     if (self.completionBlock) {
         self.completionBlock(action);
     }

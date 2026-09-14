@@ -23,6 +23,7 @@
  */
 
 #import "SFRestRequest.h"
+#import "SFRestAPI+Blocks.h"
 NS_ASSUME_NONNULL_BEGIN
 
 @interface SFRestRequest ()
@@ -31,8 +32,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, nonatomic, copy) NSInputStream * _Nullable (^requestBodyStreamBlock)(void);
 @property (nullable, nonatomic, copy) NSDictionary *requestBodyAsDictionary;
 @property (nullable, nonatomic, copy) NSString *requestContentType;
-@property (nullable, nonatomic, strong) id<SFRestDelegate> instrDelegateInternal;
 @property (nullable, nonatomic, strong) id<SFRestRequestDelegate> instrumentationDelegateInternal;
+
+@property (nonatomic, copy, nullable) SFRestRequestFailBlock failureBlock;
+@property (nonatomic, copy, nullable) SFRestResponseBlock successBlock;
+
+/// Set to YES after a DPoP nonce-challenge retry so the retry fires at most once per request.
+@property (nonatomic, assign) BOOL dpopNonceRetried;
+
 
 + (nonnull NSString *)restUrlForBaseUrl:(nullable NSString *)baseUrl serviceHostType:(SFSDKRestServiceHostType)hostType credentials:(nonnull SFOAuthCredentials *)credentials;
 + (NSString *)toQueryString:(nullable NSDictionary *)components;

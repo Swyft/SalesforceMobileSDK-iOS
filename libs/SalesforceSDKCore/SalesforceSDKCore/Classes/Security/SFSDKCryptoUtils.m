@@ -23,7 +23,6 @@
  */
 
 #import "SFSDKCryptoUtils.h"
-#import "SFPBKDFData.h"
 #import <CommonCrypto/CommonCrypto.h>
 #import "NSData+SFAdditions.h"
 #import <Security/Security.h>
@@ -111,24 +110,22 @@ static NSString * const kSFECPrivateKeyTagPrefix = @"com.salesforce.eckey.privat
 
 + (NSData *)randomByteDataWithLength:(NSUInteger)lengthInBytes
 {
-    NSData *data = [[NSMutableData dataWithLength:lengthInBytes] randomDataOfLength:lengthInBytes];
+    NSData *data = [[NSMutableData dataWithLength:lengthInBytes] sfsdk_randomDataOfLength:lengthInBytes];
     return data;
 }
 
-+ (SFPBKDFData *)createPBKDF2DerivedKey:(NSString *)stringToHash
-{
++ (nullable NSData *)pbkdf2DerivedKey:(NSString *)stringToHash {
     NSData *salt = [SFSDKCryptoUtils randomByteDataWithLength:kSFPBKDFDefaultSaltByteLength];
-    return [SFSDKCryptoUtils createPBKDF2DerivedKey:stringToHash
-                                               salt:salt
-                                   derivationRounds:kSFPBKDFDefaultNumberOfDerivationRounds
-                                          keyLength:kSFPBKDFDefaultDerivedKeyByteLength];
+    return [SFSDKCryptoUtils pbkdf2DerivedKey:stringToHash
+                                         salt:salt
+                             derivationRounds:kSFPBKDFDefaultNumberOfDerivationRounds
+                                    keyLength:kSFPBKDFDefaultDerivedKeyByteLength];
 }
 
-+ (SFPBKDFData *)createPBKDF2DerivedKey:(NSString *)stringToHash
-                                   salt:(NSData *)salt
-                       derivationRounds:(NSUInteger)numDerivationRounds
-                              keyLength:(NSUInteger)derivedKeyLength
-{
++ (nullable NSData *)pbkdf2DerivedKey:(NSString *)stringToHash
+                                 salt:(NSData *)salt
+                     derivationRounds:(NSUInteger)numDerivationRounds
+                            keyLength:(NSUInteger)derivedKeyLength {
     NSData *stringToHashAsData = [stringToHash dataUsingEncoding:NSUTF8StringEncoding];
     unsigned char key[derivedKeyLength];
     int result = CCKeyDerivationPBKDF(kCCPBKDF2, [stringToHashAsData bytes], [stringToHashAsData length], [salt bytes], [salt length], kCCPRFHmacAlgSHA256, (uint)numDerivationRounds, key, derivedKeyLength);
@@ -137,9 +134,7 @@ static NSString * const kSFECPrivateKeyTagPrefix = @"com.salesforce.eckey.privat
         // Error
         return nil;
     } else {
-        NSData *keyData = [NSData dataWithBytes:key length:derivedKeyLength];
-        SFPBKDFData *returnPBKDFData = [[SFPBKDFData alloc] initWithKey:keyData salt:salt derivationRounds:numDerivationRounds derivedKeyLength:derivedKeyLength];
-        return returnPBKDFData;
+        return [NSData dataWithBytes:key length:derivedKeyLength];
     }
 }
 
@@ -196,44 +191,6 @@ static NSString * const kSFECPrivateKeyTagPrefix = @"com.salesforce.eckey.privat
     NSString *tagString = [NSString stringWithFormat:@"%@.%@", kSFRSAPrivateKeyTagPrefix, keyName];
 
     return [self getRSAKeyRefWithTag:tagString keyLength:length];
-}
-
-+ (nullable NSData*)encryptUsingRSAforData:(NSData *)data withKeyRef:(SecKeyRef)keyRef
-{
-    uint8_t *bytes = (uint8_t*)[data bytes];
-    size_t blockSize = SecKeyGetBlockSize(keyRef);
-    
-    uint8_t cipherText[blockSize];
-    size_t cipherLength = blockSize;
-    OSStatus status = SecKeyEncrypt(keyRef, kSecPaddingPKCS1, bytes, [data length], &cipherText[0], &cipherLength);
-
-    if (status != errSecSuccess) {
-        [SFSDKCoreLogger e:[self class] format:@"encryptUsingRSAforData failed with status code: %d", status];
-        return nil;
-    }
-    
-    NSData *encryptedData = [NSData dataWithBytes:cipherText length:cipherLength];
-    return encryptedData;
-
-}
-
-+ (nullable NSData*)decryptUsingRSAforData:(NSData *)data withKeyRef:(SecKeyRef)keyRef
-{
-    size_t blockSize = SecKeyGetBlockSize(keyRef);
-    size_t cipherLength = [data length];
-    uint8_t *cipherText = (uint8_t*)[data bytes];
-    
-    uint8_t plainText[blockSize];
-    size_t plainLength = blockSize;
-    OSStatus status = SecKeyDecrypt(keyRef, kSecPaddingPKCS1, &cipherText[0], cipherLength, &plainText[0], &plainLength );
-    
-    if (status != errSecSuccess) {
-        [SFSDKCoreLogger e:[self class] format:@"decryptUsingRSAforData failed with status code: %d", status];
-        return nil;
-    }
-    
-    NSData *decryptedData = [NSData dataWithBytes:plainText length:plainLength];
-    return decryptedData;
 }
 
 + (BOOL) isSecureEnclaveAvailable

@@ -24,8 +24,9 @@
 
 #import <XCTest/XCTest.h>
 #import <SmartStore/SmartStore.h>
-#import "FMResultSet.h"
 #import <SalesforceSDKCore/SFUserAccountManager.h>
+
+@class FMResultSet;
 
 @interface SFUserAccount(SmartStoreTest)
 - (BOOL)transitionToLoginState:(SFUserAccountLoginState)newLoginState;
@@ -57,8 +58,6 @@
 - (void) checkFtsRow:(FMResultSet*) frs withExpectedEntry:(NSDictionary*)expectedEntry withSoupIndexes:(NSArray*)arraySoupIndexes;
 
 - (void) checkSoupTable:(NSArray*)expectedEntries shouldExist:(BOOL)shouldExist store:(SFSmartStore*)store soupName:(NSString*)soupName;
-
--(void) checkFileSystem:(NSArray*)expectedEntries shouldExist:(BOOL)shouldExist store:(SFSmartStore*)store soupName:(NSString*)soupName;
 
 - (SFUserAccount*) setUpSmartStoreUser;
 - (void) tearDownSmartStoreUser:(SFUserAccount*)user;

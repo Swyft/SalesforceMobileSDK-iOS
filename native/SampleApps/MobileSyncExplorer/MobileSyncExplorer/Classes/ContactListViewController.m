@@ -25,11 +25,9 @@
 #import "ContactListViewController.h"
 #import "ActionsPopupController.h"
 #import "ContactDetailViewController.h"
-#import <SalesforceSDKCore/SFDefaultUserManagementViewController.h>
-#import <SalesforceSDKCore/SFUserAccountManager.h>
-#import <SalesforceSDKCore/SFSecurityLockout.h>
-#import <SalesforceSDKCore/SalesforceSDKManager.h>
-#import <SmartStore/SFSmartStoreInspectorViewController.h>
+
+@import SalesforceSDKCore;
+@import SmartStore;
 
 static NSString * const kNavBarTitleText                = @"Contacts";
 static NSUInteger const kNavBarTintColor                = 0xf10000;
@@ -110,7 +108,7 @@ static NSUInteger const kColorCodesList[] = { 0x1abc9c,  0x2ecc71,  0x3498db,  0
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(clearPopovers:)
-                                                 name:kSFPasscodeFlowWillBegin
+                                                 name:kSFScreenLockFlowWillBegin
                                                object:nil];
 }
 
@@ -119,6 +117,14 @@ static NSUInteger const kColorCodesList[] = { 0x1abc9c,  0x2ecc71,  0x3498db,  0
 
     self.navigationController.navigationBar.barTintColor = [[self class] colorFromRgbHexValue:kNavBarTintColor];
 
+    // Without the following, the top bar becomes transparent on iOS 15 unless one scrolls all the way up
+    // See https://developer.apple.com/forums/thread/682420
+    UINavigationBarAppearance* appearance = [UINavigationBarAppearance new];
+    [appearance configureWithOpaqueBackground];
+    appearance.backgroundColor = [UIColor redColor];
+    self.navigationController.navigationBar.standardAppearance = appearance;
+    self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
+    
     [self addTapGestureRecognizers];
 
     // Nav bar label
@@ -157,16 +163,24 @@ static NSUInteger const kColorCodesList[] = { 0x1abc9c,  0x2ecc71,  0x3498db,  0
     self.toastViewMessageLabel.textColor = [UIColor whiteColor];
     [self.toastView addSubview:self.toastViewMessageLabel];
     [self.view addSubview:self.toastView];
+    
+    // To address iOS 15 spacing issue
+    // See https://developer.apple.com/forums/thread/684706
+    [self.tableView setSectionHeaderTopPadding:0.0f];
 }
 
 - (void)viewWillLayoutSubviews {
-    CGRect navBarFrame = self.navigationController.navigationBar.frame;
-    UIImage *rightButtonImage = self.navigationItem.rightBarButtonItem.image;
-    CGRect navBarLabelFrame = CGRectMake(0,
-                                         0,
-                                         navBarFrame.size.width - rightButtonImage.size.width,
-                                         navBarFrame.size.height);
-    self.navBarLabel.frame = navBarLabelFrame;
+    if (@available(iOS 26, *)) {
+        // No-op - skipping code in else block for iOS 26 because the view controller doesn't display with it
+    } else {
+        CGRect navBarFrame = self.navigationController.navigationBar.frame;
+        UIImage *rightButtonImage = self.navigationItem.rightBarButtonItem.image;
+        CGRect navBarLabelFrame = CGRectMake(0,
+                                             0,
+                                             navBarFrame.size.width - rightButtonImage.size.width,
+                                             navBarFrame.size.height);
+        self.navBarLabel.frame = navBarLabelFrame;
+    }
     [self layoutSearchHeader];
 
     [self layoutToastView];
@@ -495,16 +509,14 @@ static NSUInteger const kColorCodesList[] = { 0x1abc9c,  0x2ecc71,  0x3498db,  0
     self.toastMessage = message;
     [self layoutToastView];
     self.toastView.alpha = 0.0;
-    [UIView beginAnimations:@"toastFadeIn" context:NULL];
-    [UIView setAnimationDuration:0.3];
-    self.toastView.alpha = 1.0;
-    [UIView commitAnimations];
+    [UIView animateWithDuration:0.3 animations:^{
+        self.toastView.alpha = 1.0;
+    }];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, toastDisplayTimeSecs * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        [UIView beginAnimations:@"toastFadeOut" context:NULL];
-        [UIView setAnimationDuration:0.3];
-        self.toastView.alpha = 0.0;
-        [UIView commitAnimations];
+        [UIView animateWithDuration:0.3 animations:^{
+            self.toastView.alpha = 0.0;
+        }];
     });
 }
 

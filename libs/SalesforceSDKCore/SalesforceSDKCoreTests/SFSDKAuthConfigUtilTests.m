@@ -36,7 +36,8 @@
 static NSString * const kSFTestId = @"test_id";
 static NSString * const kSFTestClientId = @"test_client_id";
 static NSString * const kSFMyDomainEndpoint = @"mobilesdk.my.salesforce.com";
-static NSString * const kSFAlternateMyDomainEndpoint = @"powerofus.force.com";
+static NSString * const kSFAlternateMyDomainEndpoint = @"powerofus.salesforce.com";
+static NSString * const kSFAlternateMyDomainLoginURL = @"powerofus.salesforce.com/s/login";
 static NSString * const kSFSandboxEndpoint = @"test.salesforce.com";
 
 @interface SFSDKAuthConfigUtilTests : XCTestCase
@@ -74,28 +75,14 @@ static NSString * const kSFSandboxEndpoint = @"test.salesforce.com";
 
 - (void)testGetSSOUrls {
     SFOAuthCredentials *credentials = [[SFOAuthCredentials alloc] initWithIdentifier:kSFTestId clientId:kSFTestClientId encrypted:YES];
-    [credentials setDomain:kSFAlternateMyDomainEndpoint];
+    [credentials setDomain:kSFMyDomainEndpoint];
     XCTestExpectation *expect = [self expectationWithDescription:@"testGetSSOUrls"];
     [SFSDKAuthConfigUtil getMyDomainAuthConfig:^(SFOAuthOrgAuthConfiguration *authConfig, NSError *error) {
         XCTAssertNil(error, @"Error should be nil");
         XCTAssertNotNil(authConfig, @"Auth config should not be nil");
         XCTAssertNotNil(authConfig.authConfigDict, @"Auth config dictionary should not be nil");
         XCTAssertNotNil(authConfig.ssoUrls, @"SSO URLs should not be nil");
-        XCTAssertTrue(authConfig.ssoUrls.count >= 1, @"SSO URLs should have at least 1 valid entry");
-        [expect fulfill];
-    } loginDomain:credentials.domain];
-    [self waitForExpectationsWithTimeout:20 handler:nil];
-}
-
-- (void)testGetNoSSOUrls {
-    SFOAuthCredentials *credentials = [[SFOAuthCredentials alloc] initWithIdentifier:kSFTestId clientId:kSFTestClientId encrypted:YES];
-    [credentials setDomain:kSFMyDomainEndpoint];
-    XCTestExpectation *expect = [self expectationWithDescription:@"testGetNoSSOUrls"];
-    [SFSDKAuthConfigUtil getMyDomainAuthConfig:^(SFOAuthOrgAuthConfiguration *authConfig, NSError *error) {
-        XCTAssertNil(error, @"Error should be nil");
-        XCTAssertNotNil(authConfig, @"Auth config should not be nil");
-        XCTAssertNotNil(authConfig.authConfigDict, @"Auth config dictionary should not be nil");
-        XCTAssertTrue(authConfig.ssoUrls.count == 0, @"SSO URLs should be empty");
+        XCTAssertEqual(authConfig.ssoUrls.count, 1, @"SSO URLs should have 1 valid entries");
         [expect fulfill];
     } loginDomain:credentials.domain];
     [self waitForExpectationsWithTimeout:20 handler:nil];
@@ -110,7 +97,7 @@ static NSString * const kSFSandboxEndpoint = @"test.salesforce.com";
         XCTAssertNotNil(authConfig, @"Auth config should not be nil");
         XCTAssertNotNil(authConfig.authConfigDict, @"Auth config dictionary should not be nil");
         XCTAssertNotNil(authConfig.loginPageUrl, @"Login page URL should not be nil");
-        XCTAssertTrue([authConfig.loginPageUrl containsString:kSFAlternateMyDomainEndpoint], @"Login page URL should contain correct URL");
+        XCTAssertTrue([authConfig.loginPageUrl containsString:kSFAlternateMyDomainLoginURL], @"Login page URL should contain correct URL");
         [expect fulfill];
     } loginDomain:credentials.domain];
     [self waitForExpectationsWithTimeout:20 handler:nil];
@@ -125,6 +112,73 @@ static NSString * const kSFSandboxEndpoint = @"test.salesforce.com";
         [expect fulfill];
     } loginDomain:credentials.domain];
     [self waitForExpectationsWithTimeout:20 handler:nil];
+}
+
+// MARK: - isProductionLoginHost tests (no network)
+
+- (void)testIsProductionLoginHost_production {
+    XCTAssertTrue([SFSDKAuthConfigUtil isProductionLoginHost:@"login.salesforce.com"]);
+}
+
+- (void)testIsProductionLoginHost_internalPool {
+    XCTAssertTrue([SFSDKAuthConfigUtil isProductionLoginHost:@"login.test1.pc-rnd.salesforce.com"]);
+}
+
+- (void)testIsProductionLoginHost_sandbox_isFalse {
+    XCTAssertFalse([SFSDKAuthConfigUtil isProductionLoginHost:@"test.salesforce.com"]);
+}
+
+- (void)testIsProductionLoginHost_myDomain_isFalse {
+    XCTAssertFalse([SFSDKAuthConfigUtil isProductionLoginHost:@"acme.my.salesforce.com"]);
+}
+
+- (void)testIsProductionLoginHost_internalMyDomain_isFalse {
+    XCTAssertFalse([SFSDKAuthConfigUtil isProductionLoginHost:@"mobilesdksdb32.test1.my.pc-rnd.salesforce.com"]);
+}
+
+- (void)testIsProductionLoginHost_loginPrefixMyDomain_isFalse {
+    // login-acme.my.salesforce.com: has .my. so it's My Domain, not production pool
+    XCTAssertFalse([SFSDKAuthConfigUtil isProductionLoginHost:@"login-acme.my.salesforce.com"]);
+}
+
+// MARK: - isMyDomainHost tests (no network)
+
+- (void)testIsMyDomainHost_standardMyDomain {
+    XCTAssertTrue([SFSDKAuthConfigUtil isMyDomainHost:@"acme.my.salesforce.com"]);
+}
+
+- (void)testIsMyDomainHost_sandboxMyDomain {
+    XCTAssertTrue([SFSDKAuthConfigUtil isMyDomainHost:@"acme.sandbox.my.salesforce.com"]);
+}
+
+- (void)testIsMyDomainHost_internalMyDomain {
+    XCTAssertTrue([SFSDKAuthConfigUtil isMyDomainHost:@"mobilesdksdb32.test1.my.pc-rnd.salesforce.com"]);
+}
+
+- (void)testIsMyDomainHost_production_isFalse {
+    XCTAssertFalse([SFSDKAuthConfigUtil isMyDomainHost:@"login.salesforce.com"]);
+}
+
+- (void)testIsMyDomainHost_sandbox_isFalse {
+    XCTAssertFalse([SFSDKAuthConfigUtil isMyDomainHost:@"test.salesforce.com"]);
+}
+
+// MARK: - isPoolLoginHost tests (no network)
+
+- (void)testIsPoolLoginHost_production {
+    XCTAssertTrue([SFSDKAuthConfigUtil isPoolLoginHost:@"login.salesforce.com"]);
+}
+
+- (void)testIsPoolLoginHost_internalProduction {
+    XCTAssertTrue([SFSDKAuthConfigUtil isPoolLoginHost:@"login.test1.pc-rnd.salesforce.com"]);
+}
+
+- (void)testIsPoolLoginHost_sandbox {
+    XCTAssertTrue([SFSDKAuthConfigUtil isPoolLoginHost:@"test.salesforce.com"]);
+}
+
+- (void)testIsPoolLoginHost_myDomain_isFalse {
+    XCTAssertFalse([SFSDKAuthConfigUtil isPoolLoginHost:@"acme.my.salesforce.com"]);
 }
 
 @end

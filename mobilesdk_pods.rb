@@ -1,0 +1,82 @@
+# Copyright (c) 2021-present, salesforce.com, inc. All rights reserved.
+#  
+#  Redistribution and use of this software in source and binary forms, with or without modification,
+#  are permitted provided that the following conditions are met:
+#  * Redistributions of source code must retain the above copyright notice, this list of conditions
+#  and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright notice, this list of
+#  conditions and the following disclaimer in the documentation and/or other materials provided
+#  with the distribution.
+#  * Neither the name of salesforce.com, inc. nor the names of its contributors may be used to
+#  endorse or promote products derived from this software without specific prior written
+#  permission of salesforce.com, inc.
+#  
+#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+#  IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+#  FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+#  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+#  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+#  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+#  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+#  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+def use_mobile_sdk!(options={})
+  path = options[:path] ||= "./mobile_sdk/SalesforceMobileSDK-iOS"
+
+  source 'https://www.github.com/forcedotcom/SalesforceMobileSDK-iOS-Specs'
+
+  pod 'SQLCipher', '4.17.0'
+  pod 'SalesforceSDKCommon', :path => path
+  pod 'SalesforceAnalytics', :path => path
+  pod 'SalesforceSDKCore', :path => path
+  pod 'SmartStore', :path => path
+  pod 'MobileSync', :path => path
+end
+
+# Pre Install: Building Mobile SDK targets as dynamic frameworks
+def mobile_sdk_pre_install(installer)
+   dynamic_framework = ['SalesforceAnalytics', 'SalesforceSDKCore', 'SalesforceSDKCommon', 'SmartStore', 'FMDB', 'SQLCipher', 'MobileSync']
+   installer.pod_targets.each do |pod|
+     if dynamic_framework.include?(pod.name)
+       def pod.build_type
+         Pod::BuildType.dynamic_framework
+       end
+     end
+   end
+end
+  
+
+# Post Install: Enable visionOS support
+def vision_os_post_install(installer)
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['SUPPORTED_PLATFORMS'] = 'iphoneos iphonesimulator xros xrsimulator'
+      config.build_settings['TARGETED_DEVICE_FAMILY'] = '1,2,7'
+    end
+  end
+end
+
+
+# Post Install: fix deployment targets
+def mobile_sdk_post_install(installer)
+  installer.pods_project.targets.each do |target|
+    # Xcode 27 dropped support for deployment targets below iOS 15.0. Force to at least iOS 15.
+    force_to_xcode_27_min = target.deployment_target.to_f < 15.0
+    if force_to_xcode_27_min
+      change_deployment_target(target, '15.0')
+    end
+    
+    # Mobile SDK targets
+    is_mobile_sdk_target = ['SalesforceAnalytics', 'SalesforceSDKCommon', 'SalesforceSDKCore', 'SmartStore', 'MobileSync', 'SalesforceReact', 'FMDB'].include?(target.name)
+    if is_mobile_sdk_target
+      change_deployment_target(target, '18.0')
+    end
+  end
+end
+
+def change_deployment_target(target, deployment_target)
+  target.build_configurations.each do |config|
+    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = deployment_target
+  end
+end
+

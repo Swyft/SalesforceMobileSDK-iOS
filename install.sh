@@ -6,9 +6,12 @@
 # Run this script before working with the SalesforceMobileSDK Xcode workspace.
 #
 
+# Run from repo root so relative paths work regardless of invocation directory
+cd "$(dirname "$0")"
+
 # Check for iOS SDK minimum version
-IOS_MIN_VERSION_NUM=100
-IOS_MIN_VERSION_STR="iOS 10.0"
+IOS_MIN_VERSION_NUM=180
+IOS_MIN_VERSION_STR="iOS 18.0"
 ios_ver=`xcodebuild -version -sdk iphoneos | grep SDKVersion:`
 if [[ "$ios_ver" == "" ]]
 then
@@ -24,8 +27,8 @@ then
 fi
 
 # Check for Xcode minimum version
-XCODE_MIN_VERSION=90
-XCODE_MIN_VERSION_STR="Xcode 9.0"
+XCODE_MIN_VERSION=160
+XCODE_MIN_VERSION_STR="Xcode 16.0"
 xcode_ver=`xcodebuild -version | grep ^Xcode`
 if [[ "$xcode_ver" == "" ]]
 then
@@ -40,29 +43,36 @@ then
     exit 4
 fi
 
-# Sync submodules
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
-git submodule init
-git submodule sync
-git submodule update --init --recursive
-
-# Remove the old Xcode templates, if they still exist.
-hybrid_template_dir="${HOME}/Library/Developer/Xcode/Templates/Project Templates/Application/Hybrid Force.com App.xctemplate"
-native_template_dir="${HOME}/Library/Developer/Xcode/Templates/Project Templates/Application/Native Force.com REST App.xctemplate"
-if [[ -d "${hybrid_template_dir}" ]]
-then
-    echo 'Removing old hybrid template from Xcode.'
-    rm -rf "${hybrid_template_dir}"
-fi
-if [[ -d "${native_template_dir}" ]]
-then
-    echo 'Removing old native template from Xcode.'
-    rm -rf "${native_template_dir}"
-fi
-
 # Create test_credentials.json if needed to avoid build errors
 if [ ! -f "shared/test/test_credentials.json" ]
 then
     cp shared/test/test_credentials.json.sample shared/test/test_credentials.json
+fi
+
+# Create bootconfig.plist from shared sample
+BOOTCONFIG_SAMPLE="shared/bootconfig.plist.sample"
+BOOTCONFIG_PATHS=(
+    "native/SampleApps/AuthFlowTester/AuthFlowTester/Supporting Files/bootconfig.plist"
+    "native/SampleApps/RestAPIExplorer/RestAPIExplorer/bootconfig.plist"
+    "native/SampleApps/MobileSyncExplorer/MobileSyncExplorer/bootconfig.plist"
+)
+for bootconfig in "${BOOTCONFIG_PATHS[@]}"; do
+    mkdir -p "$(dirname "$bootconfig")"
+    cp "$BOOTCONFIG_SAMPLE" "$bootconfig"
+    
+    # Substitute env vars if set
+    if [ -n "${MSDK_IOS_REMOTE_ACCESS_CONSUMER_KEY:-}" ]; then
+        gsed -i "s|__CONSUMER_KEY__|${MSDK_IOS_REMOTE_ACCESS_CONSUMER_KEY}|g" "$bootconfig"
+    fi
+    if [ -n "${MSDK_IOS_REMOTE_ACCESS_CALLBACK_URL:-}" ]; then
+        gsed -i "s|__REDIRECT_URI__|${MSDK_IOS_REMOTE_ACCESS_CALLBACK_URL}|g" "$bootconfig"
+    fi
+done
+
+if [ -z "${MSDK_IOS_REMOTE_ACCESS_CONSUMER_KEY:-}" ] || [ -z "${MSDK_IOS_REMOTE_ACCESS_CALLBACK_URL:-}" ]; then
+    echo ""
+    echo "Note: MSDK_IOS_REMOTE_ACCESS_CONSUMER_KEY and/or MSDK_IOS_REMOTE_ACCESS_CALLBACK_URL are not set."
+    echo "To run the sample applications, define these environment variables or manually provide"
+    echo "a bootconfig.plist (with remoteAccessConsumerKey and oauthRedirectURI) in each sample app."
+    echo ""
 fi

@@ -24,11 +24,10 @@
 
 #import "NSDictionary+SFAdditions.h"
 #import "NSString+SFAdditions.h"
-#import "NSArray+SFAdditions.h"
 
 @implementation NSDictionary (SFAdditions)
 
-- (nullable id) objectAtPath:(NSString *) path {
+- (nullable id) sfsdk_objectAtPath:(NSString *)path {
     if (path == nil) {
         return nil;
     }
@@ -36,7 +35,7 @@
     id obj = self;
     NSArray *elements = [path componentsSeparatedByString: @"/"];
     for (NSString *element in elements) {
-        obj = [obj nonNullObjectForKey:element];
+        obj = [obj sfsdk_nonNullObjectForKey:element];
         if (obj == nil) {
             return nil;
         }
@@ -44,13 +43,13 @@
     
     if (nil != obj) {
         if ([obj isKindOfClass:[NSString class]]) {
-            obj = [NSString unescapeXMLCharacter:obj];
+            obj = [NSString sfsdk_unescapeXMLCharacter:obj];
         }
     }
     return obj;
 }
 
-- (nullable id)nonNullObjectForKey:(id)key {
+- (nullable id)sfsdk_nonNullObjectForKey:(id)key {
     id result = [self objectForKey:key];
     if (result == [NSNull null]) {
         return nil;
@@ -62,7 +61,7 @@
     return result;
 }
 
-- (nullable NSString*)jsonString {
+- (nullable NSString*)sfsdk_jsonString {
     NSError *error = nil;
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:self
                                                        options:0

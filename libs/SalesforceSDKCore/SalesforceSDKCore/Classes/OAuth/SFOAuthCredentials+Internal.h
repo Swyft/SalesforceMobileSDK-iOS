@@ -33,17 +33,25 @@ typedef NS_ENUM(NSUInteger, SFOAuthCredsEncryptionType) {
     kSFOAuthCredsEncryptionTypeKeyStore
 };
 
-extern NSString * _Nonnull const kSFOAuthEncryptionTypeKey;
+extern NSString * _Nonnull const kSFOAuthServiceLegacyAccess;
+extern NSString * _Nonnull const kSFOAuthServiceLegacyRefresh;
 extern NSString * _Nonnull const kSFOAuthServiceAccess;
 extern NSString * _Nonnull const kSFOAuthServiceRefresh;
-extern NSString * _Nonnull const kSFOAuthServiceActivation;
+extern NSString * _Nonnull const kSFOAuthServiceLightningSid;
+extern NSString * _Nonnull const kSFOAuthServiceVfSid;
+extern NSString * _Nonnull const kSFOAuthServiceContentSid;
+extern NSString * _Nonnull const kSFOAuthServiceCsrf;
+extern NSString * _Nonnull const kSFOAuthServiceParentSid;
+extern NSString * _Nonnull const kSFOAuthServiceUiSid;
+extern NSString * _Nonnull const kSFOAuthServiceBeaconChildConsumerKey;
+extern NSString * _Nonnull const kSFOAuthServiceBeaconChildConsumerSecret;
 
 extern NSException * _Nullable SFOAuthInvalidIdentifierException(void);
 
 @interface SFOAuthCredentials ()
 @property (nonatomic, readwrite, nullable) NSString *protocol;
 @property (nonatomic, readwrite, nullable) NSString *domain;
-@property (nonatomic,readwrite, nonnull) NSString *identifier;
+@property (nonatomic, readwrite, nonnull) NSString *identifier;
 @property (nonatomic, readwrite, nullable) NSString *clientId;
 @property (nonatomic, readwrite, nullable) NSString *redirectUri;
 @property (nonatomic, readwrite, nullable) NSString *jwt;
@@ -51,16 +59,35 @@ extern NSException * _Nullable SFOAuthInvalidIdentifierException(void);
 @property (nonatomic, readwrite, nullable) NSString *accessToken;
 @property (nonatomic, readwrite, nullable) NSString *organizationId;
 @property (nonatomic, readwrite, nullable) NSURL *instanceUrl;
+@property (nonatomic, readwrite, nullable) NSURL *apiInstanceUrl;
+@property (nonatomic, readwrite, nullable) NSArray<NSString *> *scopes;
 @property (nonatomic, readwrite, nullable) NSString *communityId;
 @property (nonatomic, readwrite, nullable) NSURL *communityUrl;
 @property (nonatomic, readwrite, nullable) NSDate *issuedAt;
+@property (nonatomic, readwrite, nullable) NSDate *lastTokenRotationDate;
 @property (nonatomic, readwrite, nullable) NSURL *identityUrl;
 @property (nonatomic, readwrite, nullable) NSURL *apiUrl;
 @property (nonatomic, readwrite, nullable) NSString *userId;
-@property (nonatomic, readwrite, strong, nullable) NSDictionary * additionalOAuthFields;
+@property (nonatomic, readwrite, strong, nullable) NSDictionary *additionalOAuthFields;
 @property (nonatomic, readwrite, nullable) NSString *challengeString;
 @property (nonatomic, readwrite, nullable) NSString *authCode;
 @property (nonatomic, readwrite, nullable) NSMutableDictionary * credentialsChangeSet;
+@property (nonatomic, readwrite, nullable) NSString *lightningDomain;
+@property (nonatomic, readwrite, nullable) NSString *lightningSid;
+@property (nonatomic, readwrite, nullable) NSString *vfDomain;
+@property (nonatomic, readwrite, nullable) NSString *vfSid;
+@property (nonatomic, readwrite, nullable) NSString *contentDomain;
+@property (nonatomic, readwrite, nullable) NSString *contentSid;
+@property (nonatomic, readwrite, nullable) NSString *csrfToken;
+@property (nonatomic, readwrite, nullable) NSString *cookieClientSrc;
+@property (nonatomic, readwrite, nullable) NSString *cookieSidClient;
+@property (nonatomic, readwrite, nullable) NSString *sidCookieName;
+@property (nonatomic, readwrite, nullable) NSString *parentSid;
+@property (nonatomic, readwrite, nullable) NSString *uiSid;
+@property (nonatomic, readwrite, nullable) NSString *tokenFormat;
+@property (nonatomic, readwrite, nullable) NSString *tokenType;
+@property (nonatomic, readwrite, nullable) NSString *beaconChildConsumerKey;
+@property (nonatomic, readwrite, nullable) NSString *beaconChildConsumerSecret;
 
 - (void)setPropertyForKey:(NSString *_Nonnull) key withValue:(id _Nullable ) newValue;
 

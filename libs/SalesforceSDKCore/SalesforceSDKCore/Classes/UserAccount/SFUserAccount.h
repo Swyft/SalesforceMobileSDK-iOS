@@ -24,14 +24,15 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import "SFUserAccountConstants.h"
-#import "SFIdentityData.h"
-#import "SalesforceSDKConstants.h"
+#import <SalesforceSDKCore/SFUserAccountConstants.h>
+#import <SalesforceSDKCore/SFIdentityData.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class SFUserAccountIdentity;
 @class SFOAuthCredentials;
+@class NotificationType;
 
 /**
  Enumeration of the potential login states of the user account.
@@ -72,6 +73,10 @@ NS_SWIFT_NAME(UserAccount)
  */
 @property (nonatomic, strong) SFOAuthCredentials *credentials;
 
+/** The notification types for this user
+ */
+@property (nonatomic, strong, nullable) NSArray<NotificationType *> *notificationTypes;
+
 /** The identity data associated with this user
  */
 @property (nonatomic, strong) SFIdentityData *idData;
@@ -99,6 +104,10 @@ To set this property use `setPhoto:completion:`
  */
 @property (nonatomic, readonly, assign) SFUserAccountLoginState loginState;
 
+/** Feature flags persisted for this user (e.g. BW, QR). Populated from SFSDKAppFeatureMarkers.
+ */
+@property (nonatomic, copy, nullable) NSSet<NSString *> *persistedFeatureFlags;
+
 /** Initialize with SFOAuthCredentials credentials
  @param credentials The credentials to link with the SFUserAccount.
  @return the account instance
@@ -107,7 +116,7 @@ To set this property use `setPhoto:completion:`
 
 /** Set object in customData dictionary
  
- @param object The object to store, must be NSCoding enabled
+ @param object The object to store, must be one of the following: NSString, NSNumber,  NSArray, NSDictionary, NSURL, NSNull, NSDate
  @param key An NSCopying key to store the object at
  */
 - (void)setCustomDataObject:(id<NSCoding>)object forKey:(id<NSCopying>)key;

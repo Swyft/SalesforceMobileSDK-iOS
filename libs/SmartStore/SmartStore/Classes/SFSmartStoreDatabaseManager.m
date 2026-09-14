@@ -23,6 +23,7 @@
  */
 
 #import "SFSmartStoreDatabaseManager+Internal.h"
+#import "SFSmartStore+Internal.h"
 #import <SalesforceSDKCore/UIDevice+SFHardware.h>
 #import <SalesforceSDKCore/NSData+SFAdditions.h>
 #import <SalesforceSDKCore/NSString+SFAdditions.h>
@@ -31,12 +32,10 @@
 #import <SalesforceSDKCore/SFUserAccountManager.h>
 #import <SalesforceSDKCore/SFUserAccount.h>
 #import <SalesforceSDKCore/SFDirectoryManager.h>
-#import <SalesforceSDKCore/SFKeychainItemWrapper.h>
-#import <sqlite3.h>
+#import <SalesforceSDKCommon/SFPathUtil.h>
 #import "SFSmartStoreUtils.h"
-#import "FMDatabase.h"
-#import "FMDatabaseQueue.h"
-#import "FMResultSet.h"
+@import FMDB;
+@import SQLCipher;
 
 static NSMutableDictionary *sDatabaseManagers;
 
@@ -136,7 +135,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 
 - (BOOL)persistentStoreExists:(NSString*)storeName {
     NSString *fullDbFilePath = [self fullDbFilePathForStoreName:storeName];
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     return [manager fileExistsAtPath:fullDbFilePath];
 }
 
@@ -145,12 +144,12 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
     return [[self class] openDatabaseWithPath:fullDbFilePath key:key salt:salt error:error];
 }
 
-// If you created your database with an app based on Mobile SDK 5.3.0 using cocoapod
-// Then the key was never applied, and the database can be read directly
+// If you created your database with an app based on Mobile SDK 12.0 or 12.1.x using cocoapod
+// Then SQLCipher was not properly linked
 // This method checks for that situation and encrypt the database if needed
-- (void)fixFor530Bug:(NSString *)storeName key:(NSString *)key salt:(NSString *)salt {
+- (void)fixFor12Bug:(NSString *)storeName key:(NSString *)key salt:(NSString *)salt {
     NSString *fullDbFilePath = [self fullDbFilePathForStoreName:storeName];
-    
+
     __block BOOL needEncrypting = NO;
     [[FMDatabaseQueue databaseQueueWithPath:fullDbFilePath] inDatabase:^(FMDatabase* db) {
         // In the normal case, the db will not be readable - we don't want to be logging any errors
@@ -159,20 +158,22 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
         needEncrypting = [[self class] verifyDatabaseAccess:db error:nil];
         db.logsErrors = logsErrors;
     }];
-    
+
     if (needEncrypting) {
         [[self class] encryptDbWithStoreName:storeName storePath:fullDbFilePath key:key salt:salt error:nil];
     }
 }
 
 - (FMDatabaseQueue *)openStoreQueueWithName:(NSString *)storeName key:(NSString *)key salt:(NSString *)salt error:(NSError * __autoreleasing *)error {
-    [self fixFor530Bug:storeName key:key salt:salt];
+    
+    [self fixFor12Bug:storeName key:key salt:salt];
     
     __block BOOL result = YES;
     NSString *fullDbFilePath = [self fullDbFilePathForStoreName:storeName];
     FMDatabaseQueue *queue = [FMDatabaseQueue databaseQueueWithPath:fullDbFilePath];
     [queue inDatabase:^(FMDatabase* db) {
         result = ([[self class] setKeyForDb:db key:key salt:salt error:error] != nil);
+        result = result && [db goodConnection]; // make sure SQLCipher is properly linked
     }];
     return (result ? queue : nil);
 }
@@ -199,20 +200,23 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 
 + (FMDatabase*) unlockDatabase:(FMDatabase*)db key:(NSString*)key salt:(NSString *)salt {
     if ([db open]) {
-        // Using sqlcipher 2.x kdf iter because 3.x default (64000) and 4.x default (256000) are too slow
-        [[db executeQuery:@"PRAGMA cipher_default_kdf_iter = 4000"] close];
-       
+        if ([SFSmartStore licenseKey])
+            [[db executeQuery:[NSString stringWithFormat:@"PRAGMA cipher_license = '%@'", [SFSmartStore licenseKey]]] close];
+        
         if (key)
            [db setKey:key];
+        
+        // Using sqlcipher 2.x kdf iter because 3.x default (64000) and 4.x default (256000) are too slow
+        [[db executeQuery:@"PRAGMA kdf_iter = 4000"] close];
 
-        // Migrating and upgrading an existing database in place (preserving data and schema) if necessary
-        [[db executeQuery:@"PRAGMA cipher_migrate"] close];
+        // No longer doing pragma cipher_migrate - so a jump from Mobile SDK 7.0 (last version using 3.x) to Mobile SDK 10.0 won't work
+        // Motivation: https://github.com/forcedotcom/SalesforceMobileSDK-iOS/pull/3463#issuecomment-1006844543
         
         if (salt  && [key length] > 0 ){
             [[db executeQuery:@"PRAGMA cipher_plaintext_header_size = 32"] close];
             NSString *pragma = [NSString stringWithFormat:@"PRAGMA cipher_salt = \"x'%@'\"",salt];
             [[db executeQuery:pragma] close];
-            sqlite3_exec(db.sqliteHandle, "PRAGMA journal_mode = WAL;",0,0,0);
+            [[db executeQuery:@"PRAGMA journal_mode = WAL"] close];
         }
     }
 
@@ -326,7 +330,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
      storeName,
      (encrypting ? @"unencrypted" : @"encrypted"),
      (encrypting ? @"Encrypting" : @"Unencrypting")];
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     
     // Use sqlcipher_export() to move the data from the input DB over to the new one.
     NSString *attachDbString = [NSString stringWithFormat:@"ATTACH DATABASE '%@' AS encrypted KEY '%@'", encDbPath, escapedKey];
@@ -342,7 +346,9 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
         [manager removeItemAtPath:encDbPath error:nil];
         return db;
     }
-    
+
+    [[db executeQuery:@"PRAGMA encrypted.kdf_iter = 4000"] close];
+
     // Use sqlcipher_export() to move the data from the input DB over to the new one.
     if (salt) {
         [[db executeQuery:@"PRAGMA encrypted.cipher_plaintext_header_size = 32"] close];
@@ -434,8 +440,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 
 + (BOOL)verifyDatabaseAccess:(FMDatabase *)db error:(NSError **)error
 {
-    NSString *sqlCommand = @"SELECT name FROM sqlite_master LIMIT 1";
-    FMResultSet *rs = [db executeQuery:sqlCommand];
+    FMResultSet *rs = [db executeQuery:@"select name from sqlite_master where type='table'"];
     if (rs == nil) {
         // May not be results, but rs should never be nil coming back.
         if (error != nil) {
@@ -444,11 +449,9 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
                                          code:kSFSmartStoreVerifyReadDbErrorCode
                                      userInfo:@{NSLocalizedDescriptionKey: errorDesc}];
         }
-        [rs close];
         return NO;
     }
     
-    [rs close];
     return YES;
 }
 
@@ -459,7 +462,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
     NSError* error = nil;
     BOOL result = YES;
     NSString *storeDir = [self storeDirectoryForStoreName:storeName];
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     if (![manager fileExistsAtPath:storeDir]) {
         // This store has not yet been created; create it.
         result = [SFDirectoryManager ensureDirectoryExists:storeDir error:&error];
@@ -475,7 +478,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 - (NSString*)getDirProtection:(NSString *)dirPath
 {
     NSError* error = nil;
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     NSDictionary *attr = [manager attributesOfItemAtPath:dirPath error:&error];
     NSString* result = attr[NSFileProtectionKey];
     if (error != nil) {
@@ -486,7 +489,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 
 - (BOOL) protectDir:(NSString*)dirPath protection:(NSString*)protection {
     NSString* currentProtection = [self getDirProtection:dirPath];
-    if (currentProtection == nil) {
+    if (currentProtection == nil || [dirPath isEqualToString: [SFPathUtil applicationDocumentDirectory]]) {
         // We don't own the dir, we are done
         return YES;
     }
@@ -495,7 +498,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
         if (![currentProtection isEqualToString:protection]) {
             NSError* error = nil;
             NSDictionary *attr = @{NSFileProtectionKey: protection};
-            NSFileManager *manager = [[NSFileManager alloc] init];
+            NSFileManager *manager = [NSFileManager defaultManager];
             BOOL result = [manager setAttributes:attr ofItemAtPath:dirPath error:&error];
             if (error != nil || !result) {
                 [SFSDKSmartStoreLogger e:[self class] format:@"Couldn't protect dir: %@ - error:%@", dirPath, error];
@@ -520,7 +523,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 - (void)removeStoreDir:(NSString *)storeName
 {
     NSString *storeDir = [self storeDirectoryForStoreName:storeName];
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     if ([manager fileExistsAtPath:storeDir]) {
         [manager removeItemAtPath:storeDir error:nil];
     }
@@ -551,7 +554,7 @@ static NSString * const kSFSmartStoreVerifyReadDbErrorDesc = @"Could not read fr
 - (NSArray *)allStoreNames {
     NSString *rootDir = [self rootStoreDirectory];
     NSError *getStoresError = nil;
-    NSFileManager *manager = [[NSFileManager alloc] init];
+    NSFileManager *manager = [NSFileManager defaultManager];
     NSArray *storesDirNames = [manager contentsOfDirectoryAtPath:rootDir error:&getStoresError];
     if (getStoresError) {
         [SFSDKSmartStoreLogger d:[self class] format:@"Warning: Problem retrieving all store names from the root stores folder: %@.", [getStoresError localizedDescription]];

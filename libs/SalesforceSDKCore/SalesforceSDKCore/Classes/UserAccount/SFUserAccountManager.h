@@ -21,16 +21,17 @@
  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-#import "SalesforceSDKCoreDefines.h"
-#import "SFUserAccount.h"
-#import "SFOAuthCredentials.h"
-#import "SFUserAccountIdentity.h"
-#import "SFUserAccountConstants.h"
-#import "SFOAuthCoordinator.h"
-#import "SFOAuthCoordinator.h"
-#import "SFSDKLoginViewControllerConfig.h"
-#import "SFSDKAppLockViewConfig.h"
-#import "SFSecurityLockout.h"
+#import <SalesforceSDKCore/SalesforceSDKCoreDefines.h>
+#import <SalesforceSDKCore/SFUserAccount.h>
+#import <SalesforceSDKCore/SFOAuthCredentials.h>
+#import <SalesforceSDKCore/SFUserAccountIdentity.h>
+#import <SalesforceSDKCore/SFUserAccountConstants.h>
+#import <SalesforceSDKCore/SFOAuthCoordinator.h>
+#import <SalesforceSDKCore/SFSDKLoginViewControllerConfig.h>
+#import <SalesforceSDKCore/SalesforceSDKConstants.h>
+
+@class SFSDKSPConfig;
+@class SFLoginViewController;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -88,6 +89,10 @@ FOUNDATION_EXTERN NSNotificationName kSFNotificationOrgDidLogout NS_SWIFT_NAME(U
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserDidRefreshToken  NS_SWIFT_NAME(UserAccountManager.didRefreshToken);
 
+/** Notification sent when a migrate refresh flow succeeds.
+ */
+FOUNDATION_EXTERN NSNotificationName kSFNotificationUserDidMigrateRefreshToken  NS_SWIFT_NAME(UserAccountManager.didMigrateRefreshToken);
+
 /** Notification sent prior to display of Auth View. In swift access this constant using Notification.Name.SFUserAccountManagerWillShowAuthenticationView
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserWillShowAuthView NS_SWIFT_NAME(UserAccountManager.willShowAuthenticationView);
@@ -104,22 +109,27 @@ FOUNDATION_EXTERN NSNotificationName kSFNotificationUserWillLogIn NS_SWIFT_NAME(
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserDidLogIn NS_SWIFT_NAME(UserAccountManager.didLogInUser);
 
+/// Deprecated: part of the IDP login flow, removed in 15.0.
 /**  Notification sent before SP APP invokes IDP APP for authentication. In swift access this constant using Notification.Name.SFUserAccountManagerWillSendIDPRequest
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserWillSendIDPRequest NS_SWIFT_NAME(UserAccountManager.willSendIDPRequest);
 
+/// Deprecated: part of the IDP login flow, removed in 15.0.
 /**  Notification sent before IDP APP invokes SP APP with auth code. In swift access this constant using Notification.Name.SFUserAccountManagerWillSendIDPResponse
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserWillSendIDPResponse NS_SWIFT_NAME(UserAccountManager.willSendIDPResponse);
 
+/// Deprecated: part of the IDP login flow, removed in 15.0.
 /**  Notification sent when  IDP APP receives request for authentication from SP APP. In swift access this constant using Notification.Name.SFUserAccountManagerDidReceiveIDPRequest
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserDidReceiveIDPRequest NS_SWIFT_NAME(UserAccountManager.didReceiveIDPRequest);
 
+/// Deprecated: part of the IDP login flow, removed in 15.0.
 /**  Notification sent when  SP APP receives successful response of authentication from IDP APP. In swift access this constant using Notification.Name.SFUserAccountManagerDidReceiveIDPResponse
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserDidReceiveIDPResponse NS_SWIFT_NAME(UserAccountManager.didReceiveIDPResponse);
 
+/// Deprecated: part of the IDP login flow, removed in 15.0.
 /**  Notification sent when  SP APP has log in  is successful when initiated from IDP APP. In swift access this constant using Notification.Name.SFUserAccountManagerDidLogInAfterIDPInit
  */
 FOUNDATION_EXTERN NSNotificationName kSFNotificationUserIDPInitDidLogIn  NS_SWIFT_NAME(UserAccountManager.didLogInAfterIDPInit);
@@ -136,6 +146,10 @@ FOUNDATION_EXTERN NSString * const SFUserAccountManagerUserChangeUserKey NS_SWIF
 /**  Key to use to lookup userAccount associated with  NSNotification userInfo.
  */
 FOUNDATION_EXTERN NSString * const kSFNotificationUserInfoAccountKey NS_SWIFT_NAME(UserAccountManager.userInfoAccountKey);
+
+/**  Key to use to lookup logout reason associated with NSNotification log out events.
+ */
+FOUNDATION_EXTERN NSString * const kSFNotificationUserInfoLogoutReasonKey NS_SWIFT_NAME(UserAccountManager.userInfoLogoutReasonKey);
 
 /**  Key to use to lookup credentials associated with  NSNotification userInfo.
  */
@@ -161,6 +175,26 @@ FOUNDATION_EXTERN NSString * const kSFNotificationFromUserKey NS_SWIFT_NAME(User
  */
 FOUNDATION_EXTERN NSString * const kSFNotificationToUserKey NS_SWIFT_NAME(UserAccountManager.userInfoToUserKey);
 
+/// Deprecated: part of the IDP login flow, removed in 15.0.
+/**  Key used to provide triggering scene info for IDP flow from a scene delegate.
+ */
+FOUNDATION_EXTERN NSString * const kSFIDPSceneIdKey NS_SWIFT_NAME(UserAccountManager.IDPSceneKey);
+
+/// Deprecated: part of the IDP login flow, removed in 15.0.
+typedef NS_ENUM(NSUInteger, SFSPLoginStatus) {
+    SFSPLoginStatusLaunchingSPWithUserHint,
+    SFSPLoginStatusCodeVerifierStoredInKeychain,
+    SFSPLoginStatusGettingAuthCodeFromServer
+} NS_SWIFT_NAME(SPLoginStatus);
+
+/// Deprecated: part of the IDP login flow, removed in 15.0.
+typedef NS_ENUM(NSUInteger, SFSPLoginError) {
+    SFSPLoginErrorNoScheme,
+    SFSPLoginErrorNoUserIdentity,
+    SFSPLoginErrorKeychainWriteFailed,
+    SFSPLoginErrorCredentialRefreshFailed,
+} NS_SWIFT_NAME(SPLoginError);
+
 @class SFUserAccountManager;
 @class SFSDKAlertMessage;
 @class SFSDKWindowContainer;
@@ -172,8 +206,8 @@ FOUNDATION_EXTERN NSString * const kSFNotificationToUserKey NS_SWIFT_NAME(UserAc
 NS_SWIFT_NAME(UserAccountManagerDelegate)
 @protocol SFUserAccountManagerDelegate <NSObject>
 
-
 @optional
+
 /**
  Called when the account manager wants to determine if the network is available.
  @param userAccountManager The instance of SFUserAccountManager making the call.
@@ -214,35 +248,6 @@ NS_SWIFT_NAME(UserAccountManagerDelegate)
 
 @end
 
-NS_SWIFT_NAME(UserAccountPersister)
-@protocol SFUserAccountPersister <NSObject>
-
-/**
- Called when the Account manager requires to save the state of an account.
- @param userAccount The instance of SFUserAccount making the call.
- @param  error On output, the error if the return value is NO
- @return YES if the account was saved properly, NO in case of error
- */
-- (BOOL)saveAccountForUser:(SFUserAccount *)userAccount error:(NSError **) error NS_SWIFT_UNAVAILABLE("");
-
-/** Fetches all the accounts.
-  @param error On output, the error if the return value is NO
-  @return NSDictionary with SFUserAccountIdentity as keys and SFUserAccount as values
-  */
-- (NSDictionary<SFUserAccountIdentity *,SFUserAccount *> *)fetchAllAccounts:(NSError **)error NS_SWIFT_UNAVAILABLE("");
-
-/**
- Allows you to remove the given user account.
- @param user The user account to remove.
- @param error Output error parameter, populated if there was an error deleting
- the account (likely from the filesystem operations).
- @return YES if the deletion was successful, NO otherwise.  Note: If no persisted account matching
- the user parameter is found, no action will be taken, and deletion will be reported as successful.
- */
-- (BOOL)deleteAccountForUser:(SFUserAccount *)user error:(NSError **)error NS_SWIFT_UNAVAILABLE("");
-
-@end
-
 /** User Information for post logout notifications.
  */
 NS_SWIFT_NAME(UserAccountManager.NotificationUserInfo)
@@ -256,6 +261,11 @@ NS_SWIFT_NAME(UserAccountManager.NotificationUserInfo)
  */
 NS_SWIFT_NAME(UserAccountManager)
 @interface SFUserAccountManager : NSObject
+
+/**
+ * Completion block for when auth is cancelled.
+ */
+@property (nonatomic, readwrite, copy, nullable) void (^authCancelledByUserHandlerBlock)(void);
 
 /** The current user account.  This property may be nil if the user
  has never logged in.
@@ -327,27 +337,36 @@ NS_SWIFT_NAME(UserAccountManager)
 /** Use this block to replace the Login flow selection dialog
  *
  */
-@property (nonatomic, copy, nullable) SFIDPLoginFlowSelectionBlock idpLoginFlowSelectionAction;
+@property (nonatomic, copy, nullable) SFIDPLoginFlowSelectionBlock idpLoginFlowSelectionAction SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 /** Use this to replace the default User Selection Screen
  *
  */
-@property (nonatomic, copy, nullable) SFIDPUserSelectionBlock idpUserSelectionAction;
+@property (nonatomic, copy, nullable) SFIDPUserSelectionBlock idpUserSelectionAction SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
+
+
+/** Use this to add handling for navigation actions like email and custom links on the login screen, return WKNavigationActionPolicyAllow for any other actions to make sure that the login flow isn't interrupted
+ */
+@property (nonatomic, copy, nullable) WKNavigationActionPolicy (^navigationPolicyForAction)(WKWebView *webview, WKNavigationAction *action);
+
+/** Use this to add custom handling for WKUIDelegate's `webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:`
+ */
+@property (nonatomic, copy, nullable) WKWebView * _Nullable (^createWebview)(WKWebView *webview, WKWebViewConfiguration *configuration, WKNavigationAction *action, WKWindowFeatures *windowFeatures);
 
 /**  Use this property to enable an app to become and IdentityProvider for other apps
  *
  */
-@property (nonatomic,assign) BOOL isIdentityProvider;
+@property (nonatomic,assign) BOOL isIdentityProvider SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 /**  Use this property to enable this app to be able to use another app that is an Identity Provider
  *
  */
-@property (nonatomic,assign, readonly) BOOL idpEnabled  NS_SWIFT_NAME(isIDPEnabled);
+@property (nonatomic,assign, readonly) BOOL idpEnabled  NS_SWIFT_NAME(isIDPEnabled) SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 /** Use this property to indicate the url scheme  for the Identity Provider app
  *
  */
-@property (nonatomic, copy, nullable) NSString *idpAppURIScheme;
+@property (nonatomic, copy, nullable) NSString *idpAppURIScheme SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 /** Use this property to indicate to provide a user-friendly name for your app. This name will be displayed
  *  in the user selection view of the identity provider app.
@@ -360,14 +379,33 @@ NS_SWIFT_NAME(UserAccountManager)
  */
 @property (nonatomic,strong) SFSDKLoginViewControllerConfig *loginViewControllerConfig;
 
-/** Use this property to indicate to provide PasscodeViewController customizations for themes,navbar, icons and settings.
- *
+/**
+ * Indicates that that web based authentication should be used instead of native login.
  */
-@property (nonatomic,strong) SFSDKAppLockViewConfig *appLockViewControllerConfig;
+@property (nonatomic, assign) BOOL shouldFallbackToWebAuthentication;
+
+/**
+ *  If true, present the auth window while the webview is loading. Otherwise wait to present the auth window until the webview has finished loading.
+ *  Defaults to YES.
+ *  @deprecated This property is deprecated in 14.0 and will be removed in 15.0.
+ */
+@property (nonatomic, assign) BOOL showAuthWindowWhileLoading SFSDK_DEPRECATED(14.0, 15.0, "This property will be removed in 15.0. The auth window will always be shown while loading.");
 
 /** Shared singleton
  */
 @property (class,nonatomic,readonly) SFUserAccountManager *sharedInstance NS_SWIFT_NAME(shared);
+
+/**
+ * Use this to provide a custom filter for supported notification types.
+ * The app can use this to return only the notification types it supports,
+ * so that unsupported types are not registered with the system.
+ */
+@property (nonatomic, copy, nullable) NSArray<NotificationType*>* (^filterSupportedNotificationTypes)(NSArray<NotificationType*>* notificationTypes);
+
+/** Whether or not app attestation is enabled. When YES, the SDK will include attestation
+ *  in token endpoint requests (code exchange and refresh). Defaults to NO.
+ */
+@property (nonatomic, assign) BOOL appAttestationEnabled;
 
 /**
  Adds a delegate to this user account manager.
@@ -400,6 +438,11 @@ NS_SWIFT_NAME(UserAccountManager)
  */
 - (SFUserAccount*)createUserAccount:(SFOAuthCredentials *)credentials NS_SWIFT_NAME(createUserAccount(with:));
 
+/** Create an account when necessary using token endpoint response data.  This function is intented for internal use only.
+  @param data The token endpoint response to use.
+  @param scene Optional scene to identify Native Login View Controller.
+ */
+- (void)createNativeUserAccount:(NSData *)data scene:(nullable UIScene *)scene NS_SWIFT_NAME(createNativeUserAccount(with:scene:));
 
 /** Allows you to look up the user account associated with a given user identity.
  @param userIdentity The user identity of the user account to be looked up
@@ -448,52 +491,6 @@ NS_SWIFT_NAME(UserAccountManager)
  */
 - (void)clearAllAccountState;
 
-/** Invoke this method to apply the specified credentials to the
- a user whose credentials match. If no user exists, a new one is created. Fire notifications.
- This will post user update notification.
- @param credentials The credentials to apply
- */
-- (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials NS_SWIFT_UNAVAILABLE("");
-
-/** Invoke this method to apply the specified credentials to the
- a user whose credentials match. If no user exists, a new one is created. Fire notifications.
- This will post user update notification.
- @param credentials The credentials to apply
- @param identityData The identityData to apply
- */
-- (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials withIdData:(nullable SFIdentityData *) identityData NS_SWIFT_UNAVAILABLE("");
-
-/** Invoke this method to apply the specified credentials to the
- a user whose credentials match. If no user exists, a new one is created.
- This will post user update notification.
- @param credentials The credentials to apply
- @param identityData The identityData to apply
- @param shouldSendNotification whether to post notifications.
- */
-- (SFUserAccount *)applyCredentials:(SFOAuthCredentials*)credentials withIdData:(nullable SFIdentityData *) identityData andNotification:(BOOL) shouldSendNotification NS_SWIFT_UNAVAILABLE("");
-
-
-/** Invoke this method to apply the specified id data to the
-  user. This will post user update notification.
-  @param idData The ID data to apply
-  @param userAccount The SFUserAccount to apply this change to.
- */
-- (void)applyIdData:(SFIdentityData *)idData forUser:(SFUserAccount *)userAccount NS_SWIFT_NAME(apply(identityData:to:)) NS_SWIFT_UNAVAILABLE("");
-
-/** This method will selectively update the custom attributes identity data for the  user.
- Other identity data will not be impacted.
- @param customAttributes The new custom attributes data to update in the identity data.
- @param user The SFUserAccount to apply this change to.
- */
-- (void)applyIdDataCustomAttributes:(NSDictionary *)customAttributes forUser:(SFUserAccount *)user NS_SWIFT_UNAVAILABLE("");
-
-/** This method will selectively update the custom permissions identity data for the  user.
- Other identity data will not be impacted.
- @param customPermissions The new custom permissions data to update in the identity data.
- @param user The SFUserAccount to apply this change to.
- */
-- (void)applyIdDataCustomPermissions:(NSDictionary *)customPermissions forUser:(SFUserAccount *)user NS_SWIFT_UNAVAILABLE("");
-
 /** Apply custom data to the SFUserAccount that can be
  accessed outside that user's sandbox. This data will be persisted
  between launches and should only be used for non-sensitive information.
@@ -515,12 +512,6 @@ NS_SWIFT_NAME(UserAccountManager)
  @param userAccount The user to switch to.
  */
 - (void)switchToUser:(nullable SFUserAccount *)userAccount NS_SWIFT_NAME(switchToUserAccount(_:));
-
-/** Invoke this method to inform this manager that something has changed for the  user.
- @param user  The user
- @param change The type of change (enum type). Use SFUserAccountDataChange.
- */
-- (void)userChanged:(SFUserAccount *)user change:(SFUserAccountDataChange)change  NS_SWIFT_UNAVAILABLE("");
 
 /**
  Kick off the login process for credentials that's previously configured.
@@ -564,11 +555,26 @@ Use this method to stop/clear any authentication which is has already been start
 @param completionBlock The completion block is called with YES if a session was cleared successfully. 
 */
 - (void)stopCurrentAuthentication:(nullable void (^)(BOOL))completionBlock;
+
+/**
+ SDK-internal. Resumes the browser (Advanced Auth) attempt that was suppressed while the biometric
+ prompt was shown, used when the user declines biometric. Not intended for SDK consumers.
+ @param scene The scene whose suppressed browser-auth attempt should be resumed.
+ */
+- (void)resumeBrowserAuthentication:(UIScene *)scene;
+
 /**
  Forces a logout from the current account, redirecting the user to the login process.
  This throws out the OAuth refresh token.
  */
 - (void)logout;
+
+/**
+ Forces a logout from the current account, redirecting the user to the login process.
+ This throws out the OAuth refresh token.
+ @param reason The reason that log out was initiated.
+ */
+- (void)logout:(SFLogoutReason)reason;
 
 /**
  Performs a logout on the specified user.  Note that if the user is not the current user of the app, the
@@ -579,66 +585,169 @@ Use this method to stop/clear any authentication which is has already been start
 - (void)logoutUser:(SFUserAccount *)user NS_SWIFT_NAME(logout(_:));
 
 /**
+ Performs a logout on the specified user.  Note that if the user is not the current user of the app, the
+ specified user's authenticated state will be removed, but no other action will otherwise interrupt the
+ current app state.
+ @param user The user to log out.
+ @param reason The reason that log out was initiated.
+ */
+- (void)logoutUser:(SFUserAccount *)user reason:(SFLogoutReason)reason NS_SWIFT_NAME(logout(_:reason:));
+
+/**
  Performs a logout for all users of the app, including the current user.
  */
 - (void)logoutAllUsers;
 
 /**
- Dismisses the auth view controller, resetting the UI state back to its original
- presentation.
+ Migrates the refresh token for the specified user to a new app configuration.
+ 
+ This might cause the approve/deny screen to be presented to the user to authorize the
+ new app. If successful a new set of credentials (refresh token, access token) are obtained
+ and replace the existing credentials for the user.
+ 
+ @param user The user account whose refresh token should be migrated.
+ @param newAppConfig The new app configuration to migrate to.
+ @param completionBlock Called on successful migration with the updated user account and auth info.
+ @param failureBlock Called if the migration fails with an error and optional auth info.
  */
-- (void)dismissAuthViewControllerIfPresent NS_SWIFT_UNAVAILABLE("");
+- (void)migrateRefreshToken:(SFUserAccount *)user
+               newAppConfig:(SFSDKAppConfig *)newAppConfig
+                    success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock NS_SWIFT_NAME(migrateRefreshToken(for:newAppConfig:success:failure:));
+
+/**
+ Migrates the refresh token for the specified user to a new app configuration, with explicit
+ control over whether the re-authentication requests a DPoP-bound authorization code.
+
+ This might cause the approve/deny screen to be presented to the user to authorize the
+ new app. If successful a new set of credentials (refresh token, access token) are obtained
+ and replace the existing credentials for the user.
+
+ @param user The user account whose refresh token should be migrated.
+ @param newAppConfig The new app configuration to migrate to.
+ @param useDPoP Per-call override for whether the re-authentication should bind its authorization
+ code to DPoP. `nil` defers to the process-wide `SalesforceSDKManager.useDPoP` flag, matching
+ `migrateRefreshToken:newAppConfig:success:failure:`.
+ @param completionBlock Called on successful migration with the updated user account and auth info.
+ @param failureBlock Called if the migration fails with an error and optional auth info.
+ */
+- (void)migrateRefreshToken:(SFUserAccount *)user
+               newAppConfig:(SFSDKAppConfig *)newAppConfig
+                    useDPoP:(nullable NSNumber *)useDPoP
+                    success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                    failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock NS_SWIFT_NAME(migrateRefreshToken(for:newAppConfig:useDPoP:success:failure:));
+
+/**
+ Upgrades the specified user's session to DPoP in place, without changing the connected app.
+
+ Re-authenticates using the user's current client id, redirect URI, and scopes, requesting a
+ DPoP-bound authorization code. This might cause the approve/deny screen to be presented to the
+ user. If successful, a new set of DPoP-bound credentials (refresh token, access token) are
+ obtained and replace the existing credentials for the user.
+
+ If the user's session is already DPoP-bound, this is a no-op: `completionBlock` is invoked
+ immediately with the unchanged user account and no re-authentication is attempted.
+
+ @param user The user account to upgrade to DPoP.
+ @param completionBlock Called on successful upgrade with the updated user account and auth info.
+ @param failureBlock Called if the upgrade fails with an error and optional auth info.
+ */
+- (void)upgradeToDPoP:(SFUserAccount *)user
+               success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+               failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock NS_SWIFT_NAME(upgradeToDPoP(_:success:failure:));
+
+/**
+ Downgrades the specified user's session from DPoP to Bearer in place, without changing the
+ connected app.
+
+ Re-authenticates using the user's current client id, redirect URI, and scopes, requesting an
+ unbound (Bearer) authorization code even if the process-wide DPoP flag is on. This might cause
+ the approve/deny screen to be presented to the user. If successful, a new set of Bearer
+ credentials (refresh token, access token) are obtained and replace the existing credentials for
+ the user, and the now-obsolete DPoP key pair, nonce-cache entries, and per-user DPoP marker are
+ reclaimed.
+
+ Note: the connected app must accept Bearer tokens for the downgrade to succeed; a DPoP-enforcing
+ connected app will reject the resulting Bearer session.
+
+ If the user's session is already unbound (Bearer), this is a no-op: `completionBlock` is invoked
+ immediately with the unchanged user account and no re-authentication is attempted.
+
+ @param user The user account to downgrade from DPoP.
+ @param completionBlock Called on successful downgrade with the updated user account and auth info.
+ @param failureBlock Called if the downgrade fails with an error and optional auth info.
+ */
+- (void)downgradeFromDPoP:(SFUserAccount *)user
+               success:(SFUserAccountManagerSuccessCallbackBlock)completionBlock
+               failure:(SFUserAccountManagerFailureCallbackBlock)failureBlock NS_SWIFT_NAME(downgradeFromDPoP(_:success:failure:));
 
 /**
  Handle an authentication response from the IDP application
  @param url The URL response returned to the app from the IDP application.
- @options Dictionary of name-value pairs received from open URL
+ @param options Dictionary of name-value pairs received from open URL
  @return YES if this is a valid URL response from IDP authentication that should be handled, NO otherwise.
  */
-- (BOOL)handleIDPAuthenticationResponse:(NSURL *)url options:(nonnull NSDictionary *)options  NS_SWIFT_NAME(handleIdentityProviderResponse(from:with:));
+- (BOOL)handleIDPAuthenticationResponse:(NSURL *)url options:(nonnull NSDictionary *)options NS_SWIFT_NAME(handleIdentityProviderResponse(from:with:)) SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
+
 
 /**
- Set this block to handle presentation of the Authentication View Controller.
+ Handle an authentication request with auth code from the IDP application
+ @param url The URL response returned to the app from the IDP application.
+ @param options Dictionary of name-value pairs received from open URL
+ @param completionBlock called on successful login
+ @param failureBlock called on failure during login flow
+ @return YES if this is a valid URL response from IDP authentication that should be handled, NO otherwise.
  */
-@property (nonatomic, strong) SFSDKAuthViewHandler *authViewHandler NS_SWIFT_UNAVAILABLE("");
+- (BOOL)handleIDPAuthenticationCommand:(NSURL *)url
+                               options:(nonnull NSDictionary *)options
+                            completion:(nullable SFUserAccountManagerSuccessCallbackBlock)completionBlock
+                               failure:(nullable SFUserAccountManagerFailureCallbackBlock)failureBlock NS_REFINED_FOR_SWIFT SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
+
 
 /**
- Change this block to handle all alerts  required by the SFUserAccountManager.
+ Kick off IDP initiated login flow for given SP app
+ @param config Configuration for SP app
+ @param statusBlock called at different steps throughout the login flow
+ @param failureBlock called on error, stops the login flow
  */
-@property (nonatomic, copy, nonnull) void (^alertDisplayBlock)(SFSDKAlertMessage *,SFSDKWindowContainer *) NS_SWIFT_UNAVAILABLE("");
+- (void)kickOffIDPInitiatedLoginFlowForSP:(SFSDKSPConfig *)config
+                             statusUpdate:(void(^)(SFSPLoginStatus))statusBlock
+                                  failure:(void(^)(SFSPLoginError))failureBlock SFSDK_DEPRECATED(14.0, 15.0, "The IDP (Identity Provider) login flow is deprecated. Apps should use advanced (browser-based) authentication.");
 
 /**
- Change this block to customize behavior for user initiated auth cancellation
- */
-@property (nonatomic, copy, nonnull) void (^authCancelledByUserHandlerBlock)(void) NS_SWIFT_UNAVAILABLE("");
+ Triggers the "Login for Admin" flow for the active login session associated with the given
+ login view controller. Forces browser-based (advanced) authentication via ASWebAuthenticationSession,
+ regardless of org configuration, to support phishing-resistant MFA.
 
-/**
- Determines whether an error is due to invalid auth credentials.
- @param error The error to check against an invalid credentials error.
- @return YES if the error is due to invalid credentials, NO otherwise.
- */
-+ (BOOL)errorIsInvalidAuthCredentials:(NSError *)error NS_SWIFT_UNAVAILABLE("");
+ This performs the same action as selecting "Login for Admin" from the login screen's settings
+ menu. Apps that hide the settings menu (e.g. by setting `showSettingsIcon = NO`) can call this
+ to expose the feature from their own UI.
 
-/**
- Presents the setup screen that allows the user to opt into Touch/Face Id as a replacement for Passcode.
- @param config The AppLockViewConfig used to customize the Passcode and Biometric Screens.
- */
-- (void)presentBiometricEnrollment:(nullable SFSDKAppLockViewConfig *)config;
+ To obtain a reference to the currently presented `SFLoginViewController`, either:
 
-/**
- Determines if the deivce has Touch/Face Id enabled.
- @return YES if the device is capable of biometric unlock, NO otherwise.
- */
-- (BOOL)deviceHasBiometric;
+ 1. Capture it from `SFSDKLoginViewControllerConfig.loginViewControllerCreationBlock`, which
+    the SDK invokes each time it constructs the login view:
 
-/**
- Determines if the deivce is currently using Touch/Face Id instead of passcode.
- @return SFBiometricUnlockState UserAllowed, UserDeclined, PromptUser or Unavalible.  
+        UserAccountManager.shared.loginViewControllerConfig.loginViewControllerCreationBlock = { [weak self] in
+            let vc = SalesforceLoginViewController()
+            self?.currentLoginVC = vc  // retain weakly for later
+            return vc
+        }
+
+ 2. Walk the key window's view hierarchy and locate the `SFLoginViewController` presented
+    inside the SDK's navigation controller.
+
+ @note Welcome Discovery: when the active login host is a Welcome Discovery host
+ (e.g. `welcome.salesforce.com/discovery`) and the user has not yet selected an
+ account, "Login for Admin" is a no-op (there is no resolved My Domain to switch
+ to). After the user picks an account on the discovery page, this method may be
+ called again and will use the resolved My Domain for the browser session.
+
+ @param loginViewController The login view controller whose scene's active auth session should
+ switch to "Login for Admin". Its window's scene is used to locate the session.
  */
-- (SFBiometricUnlockState)biometricUnlockState;
+- (void)loginViewControllerDidSelectLoginForAdmin:(SFLoginViewController *)loginViewController NS_SWIFT_NAME(loginViewControllerDidSelectLoginForAdmin(_:)) SFSDK_DEPRECATED(13.2.1, 14.0, "Will be removed in 14.0 when a permanent solution is provided.");
 
 @end
 
 NS_ASSUME_NONNULL_END
-                                                                          
-                                                                          
